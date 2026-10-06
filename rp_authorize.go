@@ -98,9 +98,12 @@ func (r *RP) BuildAuthorizationURL(ctx context.Context, opts RPAuthorizationRequ
 			q.Add(k, v)
 		}
 	}
-	base, err := url.Parse(md.AuthorizationEndpoint)
+	base, err := parseHTTPSURL(md.AuthorizationEndpoint)
 	if err != nil {
 		return "", fmt.Errorf("credbridge/rp: invalid authorization_endpoint: %w", err)
+	}
+	if base.Fragment != "" || base.RawFragment != "" {
+		return "", fmt.Errorf("credbridge/rp: authorization_endpoint must not contain a fragment")
 	}
 	if base.RawQuery == "" {
 		base.RawQuery = q.Encode()

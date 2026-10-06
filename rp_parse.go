@@ -40,7 +40,8 @@ type RPClaims struct {
 // Standard claim checks that ParseIDToken performs regardless:
 //   - iss must equal RPConfig.IssuerURL.
 //   - aud must contain RPConfig.ClientID.
-//   - azp, when present, must equal RPConfig.ClientID.
+//   - sub must be a non-empty string.
+//   - azp, when present, must be a non-empty string equal to RPConfig.ClientID.
 //   - nonce must equal expectedNonce (required and compared).
 //   - iat and exp must be present, and exp must be in the future.
 func (r *RP) ParseIDToken(_ context.Context, idToken, expectedNonce string) (*RPClaims, error) {
@@ -103,11 +104,20 @@ func (r *RP) parseClaimsMap(claims map[string]any, expectedNonce string, checkSt
 		if !containsString(rc.Audiences, r.cfg.ClientID) {
 			return nil, fmt.Errorf("%w: aud mismatch: got %v", ErrRPIDTokenInvalid, rc.Audiences)
 		}
-		// azp (authorized party) identifies the party the token was issued
-		// for; when present it must be this client even if the client is
-		// merely one of several audiences (OIDC Core §2).
-		if azp, ok := claims["azp"].(string); ok && azp != "" && azp != r.cfg.ClientID {
-			return nil, fmt.Errorf("%w: azp mismatch: got %q", ErrRPIDTokenInvalid, azp)
+		// An ID Token MUST carry a non-empty string sub (OIDC Core §2);
+		// a missing or wrongly-typed subject leaves rc.Subject empty.
+		if rc.Subject == "" {
+			return nil, fmt.Errorf("%w: sub is missing or not a string", ErrRPIDTokenInvalid)
+		}
+		// azp (authorized party), when present, must be a non-empty string
+		// equal to this client even if the client is merely one of several
+		// audiences (OIDC Core §2). A non-string or empty value is rejected
+		// so an attacker cannot evade the check by changing the JSON type.
+		if azpRaw, present := claims["azp"]; present {
+			azp, ok := azpRaw.(string)
+			if !ok || azp == "" || azp != r.cfg.ClientID {
+				return nil, fmt.Errorf("%w: azp is missing, malformed, or does not match the client", ErrRPIDTokenInvalid)
+			}
 		}
 		if rc.IssuedAt == 0 || rc.ExpiresAt == 0 {
 			return nil, fmt.Errorf("%w: iat or exp missing", ErrRPIDTokenInvalid)

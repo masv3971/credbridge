@@ -27,11 +27,18 @@ func (rc *RPClaims) EvaluatePresentedCredentialSets(understoodVerificationMember
 		if len(set.Credentials) == 0 {
 			return fmt.Errorf("%w: credential set %d has no credentials", ErrRPUnexpectedResponseShape, si)
 		}
+		primaryCount := 0
 		for key, entries := range set.Credentials {
 			if len(entries) == 0 {
 				return fmt.Errorf("%w: credential set %d %q has no credential entries", ErrRPUnexpectedResponseShape, si, key)
 			}
 			for ei, entry := range entries {
+				if entry.Primary {
+					primaryCount++
+					if primaryCount > 1 {
+						return fmt.Errorf("%w: credential set %d has more than one primary entry", ErrRPUnexpectedResponseShape, si)
+					}
+				}
 				if err := validateEntryStructure(entry); err != nil {
 					return fmt.Errorf("credbridge/rp: set %d %q entry %d: %w", si, key, ei, err)
 				}

@@ -42,6 +42,11 @@ type CredentialEntry struct {
 	Digest           *Digest                   `json:"digest,omitempty"`
 	Primary          bool                      `json:"primary,omitempty"`
 	AdditionalFields map[string]any            `json:"-"`
+
+	// subjectSource holds the credential's unfiltered claims so subject
+	// derivation can read a stable identifier the RP did not request to be
+	// disclosed. It is unexported and never relayed to the RP.
+	subjectSource map[string]any
 }
 
 // EffectiveVerification returns the Verification the RP should reason

@@ -36,6 +36,7 @@ func TestRP_ParseIDToken_Valid(t *testing.T) {
 	sig := testsigner.MustNew()
 	tok := testsigner.MustIssueJWT(sig, map[string]any{
 		"iss":   "https://op.example.org",
+		"sub":   "user-123",
 		"aud":   []any{"other", "rp"},
 		"iat":   now.Unix(),
 		"exp":   now.Add(time.Hour).Unix(),
@@ -72,6 +73,7 @@ func TestRP_ParseIDToken_StandardClaimErrors(t *testing.T) {
 	base := func() map[string]any {
 		return map[string]any{
 			"iss":   "https://op.example.org",
+			"sub":   "user-123",
 			"aud":   []any{"rp"},
 			"iat":   now.Unix(),
 			"exp":   now.Add(time.Hour).Unix(),
@@ -112,6 +114,7 @@ func TestRP_ParseIDToken_BadPresentedSetsShape(t *testing.T) {
 	sig := testsigner.MustNew()
 	tok := testsigner.MustIssueJWT(sig, map[string]any{
 		"iss":                       "https://op.example.org",
+		"sub":                       "user-123",
 		"aud":                       "rp",
 		"iat":                       now.Unix(),
 		"exp":                       now.Add(time.Hour).Unix(),

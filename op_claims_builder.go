@@ -72,7 +72,13 @@ func (o *OP) deriveSub(opSession *OPSession, sets PresentedCredentialSets) (stri
 	if !ok || len(cfg.SubjectClaim) == 0 {
 		return "", fmt.Errorf("%w: no subject_claim configured for credential type %q", ErrOPAccessDenied, sourceKey)
 	}
-	raw, ok := lookupClaim(entry.Claims, cfg.SubjectClaim)
+	// Read the subject from the preserved unfiltered claims so a stable
+	// identifier the RP chose not to disclose is still available here.
+	subjectClaims := entry.Claims
+	if entry.subjectSource != nil {
+		subjectClaims = entry.subjectSource
+	}
+	raw, ok := lookupClaim(subjectClaims, cfg.SubjectClaim)
 	if !ok {
 		return "", fmt.Errorf("%w: identity credential missing subject claim %v", ErrOPAccessDenied, cfg.SubjectClaim)
 	}

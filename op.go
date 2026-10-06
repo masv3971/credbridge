@@ -210,11 +210,34 @@ func (c OPConfig) validate() error {
 	// nondeterministically.
 	seenTypeKeys := make(map[string]string, len(c.CredentialPresentations))
 	for scope, cfg := range c.CredentialPresentations {
+		if err := validateCredentialTypeConfig(scope, cfg); err != nil {
+			return err
+		}
 		k := typeKey(cfg.Format, cfg.Type)
 		if other, dup := seenTypeKeys[k]; dup {
 			return fmt.Errorf("credbridge/op: scopes %q and %q both advertise format %q type %v; each credential type may be advertised by only one scope", other, scope, cfg.Format, cfg.Type)
 		}
 		seenTypeKeys[k] = scope
+	}
+	return nil
+}
+
+// validateCredentialTypeConfig rejects an unsupported credential Format
+// and enforces the format-specific Type cardinality so a configuration
+// cannot publish metadata that later produces a query whose type check
+// is skipped.
+func validateCredentialTypeConfig(scope string, cfg OPCredentialTypeConfig) error {
+	switch cfg.Format {
+	case openid4vp.FormatSDJWTVC, openid4vp.FormatLdpVCDCQL, openid4vp.FormatJwtVCJson:
+		if len(cfg.Type) == 0 {
+			return fmt.Errorf("credbridge/op: scope %q: Type must list at least one value for format %q", scope, cfg.Format)
+		}
+	case openid4vp.FormatMsoMdoc:
+		if len(cfg.Type) != 1 {
+			return fmt.Errorf("credbridge/op: scope %q: mso_mdoc Type must be exactly one doctype", scope)
+		}
+	default:
+		return fmt.Errorf("credbridge/op: scope %q: unsupported credential Format %q", scope, cfg.Format)
 	}
 	return nil
 }

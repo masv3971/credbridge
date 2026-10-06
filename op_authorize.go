@@ -124,6 +124,12 @@ func (req OPAuthorizationRequest) credentialScopes() []string {
 // validateRPQueryProfile enforces the Section 4.1.2 profile rules and
 // the reserved-prefix rule from Appendix A.2.
 func (o *OP) validateRPQueryProfile(q *openid4vp.DCQL, scopes []string) error {
+	// DCQL requires a non-empty credentials array; a DCQL object with no
+	// credential queries is a malformed request and must be rejected
+	// rather than silently replaced by scope-derived queries.
+	if len(q.Credentials) == 0 {
+		return fmt.Errorf("%w: dcql_query must contain at least one credential query", ErrOPInvalidRequest)
+	}
 	scopeSet := make(map[string]struct{}, len(scopes))
 	for _, s := range scopes {
 		scopeSet[s] = struct{}{}

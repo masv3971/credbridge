@@ -75,6 +75,13 @@ func (r ResolvedCredentialQuery) toCredentialQuery() openid4vp.CredentialQuery {
 		})
 	}
 	cq.ClaimSet = cloneOptions(r.ClaimSets)
+	// Forward the RP's effective constraints unchanged: without these the
+	// wallet would never see trusted_authorities and an explicit
+	// require_cryptographic_holder_binding:false would silently revert to
+	// the OpenID4VP default of true.
+	cq.TrustedAuthorities = append([]openid4vp.TrustedAuthority(nil), r.TrustedAuthorities...)
+	holderBinding := r.RequireCryptographicHolderBinding
+	cq.RequireCryptographicHolderBinding = &holderBinding
 	return cq
 }
 
@@ -184,12 +191,16 @@ func (o *OP) resolveQueryEntries(ctx context.Context, extractor *openid4vp.Claim
 		}
 		filtered := resolvedQuery.filterClaims(claims, matchedOption)
 		queryEntries = append(queryEntries, CredentialEntry{
-			Type:       append([]string(nil), resolvedQuery.Type...),
-			Claims:     filtered,
-			VerifiedAt: o.now().Unix(),
+			Type:   append([]string(nil), resolvedQuery.Type...),
+			Claims: filtered,
 			Verification: &Verification{
 				TrustStatus: TrustStatusNotChecked,
 			},
+			// Preserve the unfiltered claims internally so subject
+			// derivation can still read the stable identifier even when the
+			// RP did not request it to be disclosed. verified_at is omitted
+			// because this layer performs no cryptographic verification.
+			subjectSource: claims,
 		})
 	}
 	return queryEntries, true, nil
@@ -249,6 +260,13 @@ func (r ResolvedCredentialQuery) verifyCredentialType(claims map[string]any) err
 		if !containsString(r.Type, vct) {
 			return fmt.Errorf("%w: presented vct %q does not match requested type", ErrOPAccessDenied, vct)
 		}
+	case openid4vp.FormatMsoMdoc:
+		// The pinned extractor auto-detects the token format and flattens
+		// mdoc namespaces without exposing the credential's docType, so the
+		// requested docType cannot be verified and an SD-JWT could be
+		// submitted under an mdoc id and mislabelled. Reject mdoc
+		// presentations until the extractor exposes the docType.
+		return fmt.Errorf("%w: mso_mdoc docType cannot be verified by the pinned extractor", ErrOPAccessDenied)
 	case openid4vp.FormatLdpVCDCQL, openid4vp.FormatJwtVCJson:
 		// A W3C type_values inner array is an AND constraint: the
 		// credential must carry every requested type. A missing or
