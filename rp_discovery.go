@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -47,8 +48,11 @@ func (r *RP) Discover(ctx context.Context) (*RPDiscoveryMetadata, error) {
 	if r.cache.value != nil && r.now().Before(r.cache.expires) {
 		return r.cache.value, nil
 	}
-	url := strings.TrimRight(r.cfg.IssuerURL, "/") + "/.well-known/openid-configuration"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	wellKnown, err := wellKnownConfigURL(r.cfg.IssuerURL)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRPDiscoveryUnreachable, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnown, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrRPDiscoveryUnreachable, err)
 	}
@@ -68,7 +72,7 @@ func (r *RP) Discover(ctx context.Context) (*RPDiscoveryMetadata, error) {
 	if err := json.Unmarshal(body, md); err != nil {
 		return nil, fmt.Errorf("%w: parse body: %v", ErrRPDiscoveryUnreachable, err)
 	}
-	if md.Issuer != strings.TrimRight(r.cfg.IssuerURL, "/") && md.Issuer != r.cfg.IssuerURL {
+	if md.Issuer != r.cfg.IssuerURL {
 		return nil, fmt.Errorf("%w: issuer mismatch: got %q want %q", ErrRPDiscoveryUnreachable, md.Issuer, r.cfg.IssuerURL)
 	}
 	r.cache.value = md
@@ -83,4 +87,23 @@ func (r *RP) PrimeDiscovery(md *RPDiscoveryMetadata) {
 	defer r.cache.mu.Unlock()
 	r.cache.value = md
 	r.cache.expires = r.now().Add(r.cfg.DiscoveryCacheTTL)
+}
+
+// wellKnownConfigURL applies the OIDC Discovery §4 issuer-to-well-known
+// transformation: /.well-known/openid-configuration is inserted between
+// the issuer's authority and its path component, so an issuer such as
+// https://op.example/tenant maps to
+// https://op.example/.well-known/openid-configuration/tenant rather than
+// https://op.example/tenant/.well-known/openid-configuration.
+func wellKnownConfigURL(issuer string) (string, error) {
+	u, err := url.Parse(issuer)
+	if err != nil {
+		return "", fmt.Errorf("invalid issuer %q: %w", issuer, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("issuer %q is not an absolute URL", issuer)
+	}
+	path := strings.TrimRight(u.Path, "/")
+	u.Path = "/.well-known/openid-configuration" + path
+	return u.String(), nil
 }

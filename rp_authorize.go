@@ -52,6 +52,14 @@ func (r *RP) BuildAuthorizationURL(ctx context.Context, opts RPAuthorizationRequ
 	if opts.Nonce == "" {
 		return "", errors.New("credbridge/rp: nonce is required (RFC §7.1)")
 	}
+	if err := rejectReservedExtraParams(opts.ExtraParams); err != nil {
+		return "", err
+	}
+	if opts.DCQLQuery != nil {
+		if err := validateRPCredentialSetIDs(opts.DCQLQuery.CredentialSets, opts.CredentialSetIDs); err != nil {
+			return "", err
+		}
+	}
 	if opts.DCQLQuery != nil && !md.DCQLQuerySupported {
 		return "", ErrRPDCQLNotSupported
 	}
@@ -100,6 +108,50 @@ func (r *RP) BuildAuthorizationURL(ctx context.Context, opts RPAuthorizationRequ
 		base.RawQuery = base.RawQuery + "&" + q.Encode()
 	}
 	return base.String(), nil
+}
+
+// rpReservedAuthParams are the OIDC authorization parameters this
+// package sets from validated inputs; ExtraParams must not shadow them.
+var rpReservedAuthParams = map[string]struct{}{
+	"response_type": {}, "client_id": {}, "redirect_uri": {},
+	"scope": {}, "nonce": {}, "state": {}, "claims": {},
+}
+
+// rejectReservedExtraParams fails when ExtraParams would duplicate a
+// reserved authorization parameter, whose double-presence would make the
+// request's interpretation OP-parser-dependent.
+func rejectReservedExtraParams(extra url.Values) error {
+	for k := range extra {
+		if _, reserved := rpReservedAuthParams[k]; reserved {
+			return fmt.Errorf("credbridge/rp: ExtraParams must not set reserved parameter %q", k)
+		}
+	}
+	return nil
+}
+
+// validateRPCredentialSetIDs enforces the RFC §5.1.1 requirement that
+// every credential_sets entry carries a non-empty, DCQL-charset,
+// per-request-unique id, so the RP never emits a request a conforming OP
+// is guaranteed to reject.
+func validateRPCredentialSetIDs(sets []openid4vp.CredentialSetQuery, ids []string) error {
+	if len(sets) == 0 {
+		return nil
+	}
+	if len(ids) < len(sets) {
+		return fmt.Errorf("credbridge/rp: credential_sets require an id each (need %d, got %d)", len(sets), len(ids))
+	}
+	seen := make(map[string]struct{}, len(sets))
+	for i := range sets {
+		id := ids[i]
+		if !isValidDCQLID(id) {
+			return fmt.Errorf("credbridge/rp: credential_sets[%d].id %q is missing or violates the DCQL charset", i, id)
+		}
+		if _, dup := seen[id]; dup {
+			return fmt.Errorf("credbridge/rp: credential_sets ids must be unique; %q appears twice", id)
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
 }
 
 // marshalDCQLWithSetIDs marshals dcql and injects the RFC §5.1.1

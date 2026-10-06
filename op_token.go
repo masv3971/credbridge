@@ -15,7 +15,30 @@ import (
 // dropped from the session store, honouring the Section 6.4 fresh-
 // presentation retention rule for the ID Token delivery channel.
 func (o *OP) IssueIDToken(ctx context.Context, opSession *OPSession, result *OPPresentationResult, opts OPTokenOptions) (string, error) {
-	sets := o.assemblePresentedCredentialSets(result)
+	if opSession == nil {
+		return "", fmt.Errorf("%w: nil session", ErrOPAccessDenied)
+	}
+	if opts.TokenLifetimeSeconds < 0 {
+		return "", fmt.Errorf("%w: TokenLifetimeSeconds must not be negative", ErrOPInvalidRequest)
+	}
+	// Atomically consume the stored session: retrieving then deleting it
+	// before minting ensures a stale, expired, or already-consumed
+	// session cannot be replayed to mint a second token. The stored copy
+	// (not the caller-supplied pointer) is the source of truth for the
+	// minted claims.
+	stored, err := o.storage.Get(ctx, opSession.ID)
+	if err != nil {
+		return "", fmt.Errorf("%w: session %q not found or already consumed: %v", ErrOPAccessDenied, opSession.ID, err)
+	}
+	if err := o.storage.Delete(ctx, stored.ID); err != nil {
+		return "", fmt.Errorf("credbridge/op: consume session: %w", err)
+	}
+	opSession = stored
+
+	sets, err := o.assemblePresentedCredentialSets(result)
+	if err != nil {
+		return "", err
+	}
 	sub, err := o.deriveSub(opSession, sets)
 	if err != nil {
 		return "", err
@@ -38,29 +61,24 @@ func (o *OP) IssueIDToken(ctx context.Context, opSession *OPSession, result *OPP
 	if err != nil {
 		return "", fmt.Errorf("credbridge/op: sign id token: %w", err)
 	}
-	if !opts.RetainForUserInfo {
-		if err := o.storage.Delete(ctx, opSession.ID); err != nil {
-			return tok, fmt.Errorf("credbridge/op: id token issued but session cleanup failed: %w", err)
-		}
-	}
 	return tok, nil
 }
 
 // OPTokenOptions tune ID Token / UserInfo issuance.
 type OPTokenOptions struct {
 	// TokenLifetimeSeconds sets exp − iat. Defaults to 300 (5 minutes).
+	// Negative values are rejected.
 	TokenLifetimeSeconds int
-	// RetainForUserInfo asks the OP to keep the session (and its
-	// verified credential claims) available for later UserInfo requests
-	// authorised by the same access token, subject to §6.4.
-	RetainForUserInfo bool
 }
 
 // UserInfoPayload assembles the JSON body the OP returns from
 // /userinfo. Callers that use signed UserInfo responses can pass the
 // returned map to jose.MakeJWT themselves.
 func (o *OP) UserInfoPayload(opSession *OPSession, result *OPPresentationResult) (map[string]any, error) {
-	sets := o.assemblePresentedCredentialSets(result)
+	sets, err := o.assemblePresentedCredentialSets(result)
+	if err != nil {
+		return nil, err
+	}
 	sub, err := o.deriveSub(opSession, sets)
 	if err != nil {
 		return nil, err

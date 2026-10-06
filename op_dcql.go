@@ -50,10 +50,17 @@ func (o *OP) buildResolvedDCQL(scopes []string, rp *openid4vp.DCQL, credentialSe
 			return ResolvedDCQL{}, fmt.Errorf("%w: unsupported credential type in dcql_query", ErrOPInvalidRequest)
 		}
 		covered[scope] = true
-		resolvedDCQL.Credentials = append(resolvedDCQL.Credentials, resolveCredentialQuery(cq, scope))
+		resolved, err := o.resolveCredentialQuery(cq, scope)
+		if err != nil {
+			return ResolvedDCQL{}, err
+		}
+		resolvedDCQL.Credentials = append(resolvedDCQL.Credentials, resolved)
 	}
 	if len(rp.CredentialSets) > 0 {
 		if err := validateCredentialSetIDs(rp.CredentialSets, credentialSetIDs); err != nil {
+			return ResolvedDCQL{}, err
+		}
+		if err := validateCredentialSetOptions(rp.CredentialSets, rp.Credentials); err != nil {
 			return ResolvedDCQL{}, err
 		}
 	}
@@ -75,9 +82,41 @@ func (o *OP) buildResolvedDCQL(scopes []string, rp *openid4vp.DCQL, credentialSe
 			return ResolvedDCQL{}, fmt.Errorf("%w: scope %q would produce a DCQL id violating OpenID4VP \u00a76.1 charset", ErrOPInvalidRequest, scope)
 		}
 		aug := o.credentialQueryForScope(scope, id)
-		resolvedDCQL.Credentials = append(resolvedDCQL.Credentials, resolveCredentialQuery(aug, scope))
+		resolved, err := o.resolveCredentialQuery(aug, scope)
+		if err != nil {
+			return ResolvedDCQL{}, err
+		}
+		resolvedDCQL.Credentials = append(resolvedDCQL.Credentials, resolved)
 	}
 	return resolvedDCQL, nil
+}
+
+// validateCredentialSetOptions enforces that every credential_sets
+// option is non-empty and references a credential query id that exists
+// in credentials, so a malformed request is rejected with
+// invalid_request at authorization time rather than surfacing later as
+// an unsatisfied presentation.
+func validateCredentialSetOptions(sets []openid4vp.CredentialSetQuery, credentials []openid4vp.CredentialQuery) error {
+	credIDs := make(map[string]struct{}, len(credentials))
+	for _, cq := range credentials {
+		credIDs[cq.ID] = struct{}{}
+	}
+	for i, cs := range sets {
+		if len(cs.Options) == 0 {
+			return fmt.Errorf("%w: credential_sets[%d] has no options", ErrOPInvalidRequest, i)
+		}
+		for _, option := range cs.Options {
+			if len(option) == 0 {
+				return fmt.Errorf("%w: credential_sets[%d] has an empty option", ErrOPInvalidRequest, i)
+			}
+			for _, ref := range option {
+				if _, ok := credIDs[ref]; !ok {
+					return fmt.Errorf("%w: credential_sets[%d] option references unknown credential query id %q", ErrOPInvalidRequest, i, ref)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // validateCredentialSetIDs enforces §4.1.2's REQUIRED "id" on every
@@ -113,7 +152,11 @@ func (o *OP) buildScopeDCQL(scopes []string) (ResolvedDCQL, error) {
 			return ResolvedDCQL{}, fmt.Errorf("%w: scope %q violates OpenID4VP \u00a76.1 DCQL id charset", ErrOPInvalidRequest, scope)
 		}
 		aug := o.credentialQueryForScope(scope, scope)
-		resolvedDCQL.Credentials = append(resolvedDCQL.Credentials, resolveCredentialQuery(aug, scope))
+		resolved, err := o.resolveCredentialQuery(aug, scope)
+		if err != nil {
+			return ResolvedDCQL{}, err
+		}
+		resolvedDCQL.Credentials = append(resolvedDCQL.Credentials, resolved)
 	}
 	return resolvedDCQL, nil
 }
@@ -143,13 +186,18 @@ func (o *OP) credentialQueryForScope(scope, id string) openid4vp.CredentialQuery
 }
 
 // resolveCredentialQuery captures the RP's CredentialQuery in the form
-// the OP consults at response time (paths, values, claim_sets).
-func resolveCredentialQuery(cq openid4vp.CredentialQuery, scope string) ResolvedCredentialQuery {
+// the OP consults at response time (paths, values, claim_sets, trusted
+// authorities, holder binding). When the RP omits claims, the scope's
+// pre-registered claim set is applied so response filtering cannot
+// over-disclose. Trusted authorities are filtered through the OP's SSRF
+// allowlist (§7.4).
+func (o *OP) resolveCredentialQuery(cq openid4vp.CredentialQuery, scope string) (ResolvedCredentialQuery, error) {
 	resolvedQuery := ResolvedCredentialQuery{
-		ID:        cq.ID,
-		Scope:     scope,
-		Format:    cq.Format,
-		ClaimSets: cloneOptions(cq.ClaimSet),
+		ID:                                cq.ID,
+		Scope:                             scope,
+		Format:                            cq.Format,
+		ClaimSets:                         cloneOptions(cq.ClaimSet),
+		RequireCryptographicHolderBinding: cq.RequiresCryptographicHolderBinding(),
 	}
 	switch cq.Format {
 	case openid4vp.FormatSDJWTVC:
@@ -170,7 +218,52 @@ func resolveCredentialQuery(cq openid4vp.CredentialQuery, scope string) Resolved
 			Values: append([]any(nil), cl.Values...),
 		})
 	}
-	return resolvedQuery
+	// §5.4 / Appendix A: an omitted claims member in DCQL mode must fall
+	// back to the scope's pre-registered claim set, not "relay everything".
+	if len(resolvedQuery.Claims) == 0 {
+		if cfg, ok := o.cfg.CredentialPresentations[scope]; ok {
+			for _, path := range cfg.Claims {
+				resolvedQuery.Claims = append(resolvedQuery.Claims, ResolvedClaim{
+					Path: append([]string(nil), path...),
+				})
+			}
+		}
+	}
+	kept, allowed, err := o.filterTrustedAuthorities(cq.TrustedAuthorities)
+	if err != nil {
+		return ResolvedCredentialQuery{}, err
+	}
+	resolvedQuery.TrustedAuthorities = kept
+	resolvedQuery.TrustedAuthorityAllowed = allowed
+	return resolvedQuery, nil
+}
+
+// filterTrustedAuthorities applies the OP's SSRF allowlist (§7.4) to an
+// RP-supplied trusted_authorities array. Each authority value is kept
+// only when present in TrustedAuthorityAllowlist. When the RP supplied
+// authorities but none survive filtering, the request is rejected with
+// invalid_request per §7.4 (all authorities off-allowlist). A query with
+// no trusted_authorities is unconstrained.
+func (o *OP) filterTrustedAuthorities(auths []openid4vp.TrustedAuthority) ([]openid4vp.TrustedAuthority, bool, error) {
+	if len(auths) == 0 {
+		return nil, false, nil
+	}
+	var kept []openid4vp.TrustedAuthority
+	for _, a := range auths {
+		var vals []string
+		for _, v := range a.Values {
+			if o.cfg.TrustedAuthorityAllowlist[v] {
+				vals = append(vals, v)
+			}
+		}
+		if len(vals) > 0 {
+			kept = append(kept, openid4vp.TrustedAuthority{Type: a.Type, Values: vals})
+		}
+	}
+	if len(kept) == 0 {
+		return nil, false, fmt.Errorf("%w: all trusted_authorities are off the OP allowlist", ErrOPInvalidRequest)
+	}
+	return kept, true, nil
 }
 
 // stringPath converts an openid4vp claim path ([]*string) into a

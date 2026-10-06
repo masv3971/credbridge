@@ -65,14 +65,14 @@ func toFloat64(v any) (float64, bool) {
 	const maxSafe = float64(1<<53 - 1)
 	switch n := v.(type) {
 	case int:
-		return float64(n), true
+		return toFloat64(int64(n))
 	case int32:
 		return float64(n), true
 	case int64:
 		f := float64(n)
 		return f, n == int64(f)
 	case uint:
-		return float64(n), true
+		return toFloat64(uint64(n))
 	case uint32:
 		return float64(n), true
 	case uint64:

@@ -25,6 +25,19 @@ const (
 	OPWalletProtocolOpenID4VP OPWalletProtocol = "openid4vp"
 )
 
+// OPSubjectType selects how the OP derives the "sub" claim (Section 5.5,
+// OIDC Core §8).
+type OPSubjectType string
+
+const (
+	// OPSubjectTypePairwise derives a per-client pairwise identifier and
+	// requires a deployment-specific PairwiseSalt.
+	OPSubjectTypePairwise OPSubjectType = "pairwise"
+	// OPSubjectTypePublic returns the raw credential subject value and is
+	// advertised as "public" in discovery metadata.
+	OPSubjectTypePublic OPSubjectType = "public"
+)
+
 // OPConfig is the configuration for an OP bridge.
 type OPConfig struct {
 	// Issuer is the OP's issuer identifier (an https URL).
@@ -52,9 +65,16 @@ type OPConfig struct {
 	DCQLQuerySupported bool
 
 	// PairwiseSalt is used as HMAC key when deriving pairwise "sub"
-	// values (Section 5.5 → OIDC Core §8.1). If empty, subject
-	// derivation returns the raw subject value verbatim.
+	// values (Section 5.5 → OIDC Core §8.1). It is REQUIRED when
+	// SubjectType is pairwise (the default) and ignored when SubjectType
+	// is public.
 	PairwiseSalt []byte
+
+	// SubjectType selects the "sub" derivation and the advertised
+	// subject_types_supported value (Section 5.5). Defaults to pairwise,
+	// which requires a non-empty PairwiseSalt. Set to public to expose
+	// the raw subject value and advertise it accordingly.
+	SubjectType OPSubjectType
 
 	// TrustedAuthorityAllowlist restricts which URIs/entity IDs the OP
 	// will dereference for trust material (Section 7.4). Nil means "allow
@@ -133,6 +153,9 @@ func (o *OP) Close() {
 	if o.vp != nil {
 		o.vp.Close()
 	}
+	if s, ok := o.storage.(interface{ Stop() }); ok {
+		s.Stop()
+	}
 }
 
 // validate reports the first missing or malformed required field on c.
@@ -140,20 +163,79 @@ func (c OPConfig) validate() error {
 	if c.Issuer == "" {
 		return errors.New("credbridge/op: OPConfig.Issuer is required")
 	}
-	if _, err := url.Parse(c.Issuer); err != nil {
+	issuerURL, err := parseHTTPSURL(c.Issuer)
+	if err != nil {
 		return fmt.Errorf("credbridge/op: OPConfig.Issuer invalid: %w", err)
 	}
 	if c.AuthorizationEndpoint == "" {
 		return errors.New("credbridge/op: OPConfig.AuthorizationEndpoint is required")
 	}
+	if err := validateEndpointUnderIssuer("AuthorizationEndpoint", c.AuthorizationEndpoint, issuerURL); err != nil {
+		return err
+	}
 	if c.TokenEndpoint == "" {
 		return errors.New("credbridge/op: OPConfig.TokenEndpoint is required")
+	}
+	if err := validateEndpointUnderIssuer("TokenEndpoint", c.TokenEndpoint, issuerURL); err != nil {
+		return err
+	}
+	if err := validateEndpointUnderIssuer("UserInfoEndpoint", c.UserInfoEndpoint, issuerURL); err != nil {
+		return err
+	}
+	if err := validateEndpointUnderIssuer("JWKSURI", c.JWKSURI, issuerURL); err != nil {
+		return err
 	}
 	if c.Signer == nil {
 		return errors.New("credbridge/op: OPConfig.Signer is required")
 	}
+	if c.WalletProtocol != "" && c.WalletProtocol != OPWalletProtocolOpenID4VP {
+		return fmt.Errorf("credbridge/op: unsupported WalletProtocol %q (only %q is implemented)", c.WalletProtocol, OPWalletProtocolOpenID4VP)
+	}
+	switch c.SubjectType {
+	case "", OPSubjectTypePairwise:
+		if len(c.PairwiseSalt) == 0 {
+			return errors.New("credbridge/op: OPConfig.PairwiseSalt is required for pairwise SubjectType; set SubjectType=public to expose raw subjects")
+		}
+	case OPSubjectTypePublic:
+	default:
+		return fmt.Errorf("credbridge/op: unsupported SubjectType %q", c.SubjectType)
+	}
 	if len(c.CredentialPresentations) == 0 {
 		return errors.New("credbridge/op: OPConfig.CredentialPresentations must contain at least one entry")
+	}
+	return nil
+}
+
+// parseHTTPSURL parses raw and requires it to be an absolute https URL
+// with a host component.
+func parseHTTPSURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme != "https" {
+		return nil, fmt.Errorf("must be an absolute https URL, got %q", raw)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("must have a host, got %q", raw)
+	}
+	return u, nil
+}
+
+// validateEndpointUnderIssuer requires a non-empty endpoint to be an
+// absolute https URL sharing the issuer's origin (scheme+host), matching
+// the configuration contract that published endpoints live under the
+// issuer. Empty optional endpoints pass.
+func validateEndpointUnderIssuer(name, endpoint string, issuer *url.URL) error {
+	if endpoint == "" {
+		return nil
+	}
+	u, err := parseHTTPSURL(endpoint)
+	if err != nil {
+		return fmt.Errorf("credbridge/op: OPConfig.%s invalid: %w", name, err)
+	}
+	if u.Scheme != issuer.Scheme || u.Host != issuer.Host {
+		return fmt.Errorf("credbridge/op: OPConfig.%s %q is not under issuer origin %q://%s", name, endpoint, issuer.Scheme, issuer.Host)
 	}
 	return nil
 }
@@ -181,13 +263,22 @@ type defaultOPStorage struct {
 }
 
 func newDefaultOPStorage() OPStorage {
+	cache := ttlcache.New[string, *OPSession](
+		ttlcache.WithTTL[string, *OPSession](defaultOPSessionTTL),
+		ttlcache.WithDisableTouchOnHit[string, *OPSession](),
+	)
+	// Start the janitor so expired authorization sessions are evicted and
+	// the nominal TTL actually bounds memory use; stopped from OP.Close.
+	go cache.Start()
 	return &defaultOPStorage{
-		cache: ttlcache.New[string, *OPSession](
-			ttlcache.WithTTL[string, *OPSession](defaultOPSessionTTL),
-			ttlcache.WithDisableTouchOnHit[string, *OPSession](),
-		),
-		ttl: defaultOPSessionTTL,
+		cache: cache,
+		ttl:   defaultOPSessionTTL,
 	}
+}
+
+// Stop halts the TTL cache janitor goroutine. Called from OP.Close.
+func (s *defaultOPStorage) Stop() {
+	s.cache.Stop()
 }
 
 // Put stores opSession keyed by its ID.

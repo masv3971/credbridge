@@ -43,6 +43,10 @@ func (o *OP) Metadata() OPDiscoveryMetadata {
 		credTypes[scope] = OPDiscoveryCredentialType(cfg)
 		scopes = append(scopes, scope)
 	}
+	subjectType := o.cfg.SubjectType
+	if subjectType == "" {
+		subjectType = OPSubjectTypePairwise
+	}
 	return OPDiscoveryMetadata{
 		Issuer:                           o.cfg.Issuer,
 		AuthorizationEndpoint:            o.cfg.AuthorizationEndpoint,
@@ -50,7 +54,7 @@ func (o *OP) Metadata() OPDiscoveryMetadata {
 		UserInfoEndpoint:                 o.cfg.UserInfoEndpoint,
 		JWKSURI:                          o.cfg.JWKSURI,
 		ResponseTypesSupported:           []string{"code"},
-		SubjectTypesSupported:            []string{"pairwise"},
+		SubjectTypesSupported:            []string{string(subjectType)},
 		IDTokenSigningAlgValuesSupported: []string{o.cfg.Signer.Algorithm()},
 		ScopesSupported:                  scopes,
 		ClaimsSupported:                  []string{"sub", PresentedCredentialSetsClaim},

@@ -6,9 +6,12 @@ import "fmt"
 // draft requires of every Relying Party:
 //
 //  1. presented_credential_sets must be present (essential requests).
-//  2. For every Credential Entry, Verification.Crit must be satisfied
+//  2. Each Credential Entry conforms to the Section 5.1.2 structure
+//     (non-empty type, exactly one of claims/namespaces, and a
+//     trust_status whenever a verification object is present).
+//  3. For every Credential Entry, Verification.Crit must be satisfied
 //     via [EvaluateCrit].
-//  3. Unknown top-level members of a Credential Entry that are not
+//  4. Unknown top-level members of a Credential Entry that are not
 //     listed in crit are silently ignored (§4.2 item 4).
 //
 // understoodVerificationMembers is the set of additional Verification
@@ -23,11 +26,33 @@ func (rc *RPClaims) EvaluatePresentedCredentialSets(understoodVerificationMember
 	for si, set := range rc.PresentedCredentialSets {
 		for key, entries := range set.Credentials {
 			for ei, entry := range entries {
+				if err := validateEntryStructure(entry); err != nil {
+					return fmt.Errorf("credbridge/rp: set %d %q entry %d: %w", si, key, ei, err)
+				}
 				if err := EvaluateCrit(entry, understoodVerificationMembers...); err != nil {
 					return fmt.Errorf("credbridge/rp: set %d %q entry %d: %w", si, key, ei, err)
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// validateEntryStructure enforces the Section 5.1.2 shape of a Credential
+// Entry before any crit evaluation: type is required, exactly one of
+// claims or namespaces must be populated, and a present verification
+// object must carry the required trust_status member.
+func validateEntryStructure(e CredentialEntry) error {
+	if len(e.Type) == 0 {
+		return fmt.Errorf("%w: credential entry is missing the required type", ErrRPUnexpectedResponseShape)
+	}
+	hasClaims := len(e.Claims) > 0
+	hasNamespaces := len(e.Namespaces) > 0
+	if hasClaims == hasNamespaces {
+		return fmt.Errorf("%w: credential entry must populate exactly one of claims or namespaces", ErrRPUnexpectedResponseShape)
+	}
+	if e.Verification != nil && e.Verification.TrustStatus == "" {
+		return fmt.Errorf("%w: verification present without the required trust_status", ErrRPUnexpectedResponseShape)
 	}
 	return nil
 }

@@ -91,12 +91,30 @@ type OPPresentationResult struct {
 // HandleWalletResponse verifies resp against opSession.DCQL and
 // returns the entries the OP will pack into presented_credential_sets.
 //
-// The trust check is delegated to matcher; pass nil to skip trust
-// authority evaluation (which sets trust_status to "not_checked" for
-// every entry).
+// Response processing accumulates per-credential-query results: a query
+// whose value or claim_sets constraints fail is treated as unsatisfied
+// rather than aborting the whole response, and access_denied is returned
+// only when a required credential set (or, when credential_sets is
+// absent, any credential query) is left unsatisfied.
+//
+// NOTE: this layer does not perform issuer-signature, trust-chain, or
+// holder-binding verification — the pinned openid4vp extractor only
+// parses tokens. Consequently trust_status is reported as "not_checked"
+// and holder_binding is not asserted; the matcher parameter is reserved
+// for a future verifier and does not by itself upgrade trust_status.
+// Callers MUST verify credential signatures, issuer trust, and holder
+// binding before relying on the returned claims.
 func (o *OP) HandleWalletResponse(ctx context.Context, opSession *OPSession, resp *openid4vp.VPResponse, matcher openid4vp.TrustedAuthorityMatcher) (*OPPresentationResult, error) {
+	if opSession == nil {
+		return nil, fmt.Errorf("%w: nil session", ErrOPAccessDenied)
+	}
 	if resp == nil || len(resp.VPToken) == 0 {
 		return nil, fmt.Errorf("%w: wallet returned empty vp_token", ErrOPAccessDenied)
+	}
+	// §7.1: the response state MUST match the session so a wallet
+	// response from another transaction cannot be processed here.
+	if resp.State != opSession.State {
+		return nil, fmt.Errorf("%w: response state does not match session", ErrOPAccessDenied)
 	}
 	extractor := openid4vp.NewClaimsExtractor()
 
@@ -105,40 +123,134 @@ func (o *OP) HandleWalletResponse(ctx context.Context, opSession *OPSession, res
 		byID[c.ID] = c
 	}
 	entries := make(map[string][]CredentialEntry, len(resp.VPToken))
+	satisfied := make(map[string]bool, len(resp.VPToken))
 	for credID, tokens := range resp.VPToken {
 		resolvedQuery, ok := byID[credID]
 		if !ok {
 			return nil, fmt.Errorf("%w: wallet returned unknown credential id %q", ErrOPAccessDenied, credID)
 		}
-		for _, token := range tokens {
-			claims, err := extractor.ExtractClaimsFromVPToken(ctx, token)
-			if err != nil {
-				return nil, fmt.Errorf("%w: extract claims: %v", ErrOPAccessDenied, err)
-			}
-			if err := resolvedQuery.postValidateValues(claims); err != nil {
-				return nil, err
-			}
-			matchedOption, err := resolvedQuery.selectClaimSetOption(claims)
-			if err != nil {
-				return nil, err
-			}
-			filtered := resolvedQuery.filterClaims(claims, matchedOption)
-			entry := CredentialEntry{
-				Type:       append([]string(nil), resolvedQuery.Type...),
-				Claims:     filtered,
-				VerifiedAt: o.now().Unix(),
-				Verification: &Verification{
-					TrustStatus:   deriveTrustStatus(matcher),
-					HolderBinding: HolderBindingKey,
-				},
-			}
-			entries[credID] = append(entries[credID], entry)
+		queryEntries, ok, err := o.resolveQueryEntries(ctx, extractor, resolvedQuery, tokens)
+		if err != nil {
+			return nil, err
 		}
+		if ok && len(queryEntries) > 0 {
+			entries[credID] = queryEntries
+			satisfied[credID] = true
+		}
+	}
+
+	satisfiedSets, err := evaluateCredentialSets(opSession.DCQL, satisfied)
+	if err != nil {
+		return nil, err
 	}
 	return &OPPresentationResult{
 		Entries:       entries,
-		SatisfiedSets: append([]ResolvedCredentialSet(nil), opSession.DCQL.CredentialSets...),
+		SatisfiedSets: satisfiedSets,
 	}, nil
+}
+
+// resolveQueryEntries validates every token presented for one credential
+// query. It returns (entries, true, nil) when all tokens satisfy the
+// query's type, value, and claim_sets constraints; (nil, false, nil)
+// when a constraint is unmet (the query is unsatisfied but the overall
+// response may still succeed); and an error only for a malformed token.
+func (o *OP) resolveQueryEntries(ctx context.Context, extractor *openid4vp.ClaimsExtractor, resolvedQuery ResolvedCredentialQuery, tokens []string) ([]CredentialEntry, bool, error) {
+	var queryEntries []CredentialEntry
+	for _, token := range tokens {
+		claims, err := extractor.ExtractClaimsFromVPToken(ctx, token)
+		if err != nil {
+			return nil, false, fmt.Errorf("%w: extract claims: %v", ErrOPAccessDenied, err)
+		}
+		if err := resolvedQuery.verifyCredentialType(claims); err != nil {
+			return nil, false, nil
+		}
+		if err := resolvedQuery.postValidateValues(claims); err != nil {
+			return nil, false, nil
+		}
+		matchedOption, err := resolvedQuery.selectClaimSetOption(claims)
+		if err != nil {
+			return nil, false, nil
+		}
+		filtered := resolvedQuery.filterClaims(claims, matchedOption)
+		queryEntries = append(queryEntries, CredentialEntry{
+			Type:       append([]string(nil), resolvedQuery.Type...),
+			Claims:     filtered,
+			VerifiedAt: o.now().Unix(),
+			Verification: &Verification{
+				TrustStatus: TrustStatusNotChecked,
+			},
+		})
+	}
+	return queryEntries, true, nil
+}
+
+// evaluateCredentialSets implements the §4.1.2 requirement rules: when
+// credential_sets is absent every credential query is required; when it
+// is present, each required set must have one fully-satisfied option,
+// while optional sets simply drop out when unsatisfied.
+func evaluateCredentialSets(dcql ResolvedDCQL, satisfied map[string]bool) ([]ResolvedCredentialSet, error) {
+	if len(dcql.CredentialSets) == 0 {
+		for _, q := range dcql.Credentials {
+			if !satisfied[q.ID] {
+				return nil, fmt.Errorf("%w: required credential %q was not satisfied", ErrOPAccessDenied, q.ID)
+			}
+		}
+		return nil, nil
+	}
+	var out []ResolvedCredentialSet
+	for _, set := range dcql.CredentialSets {
+		optionSatisfied := false
+		for _, option := range set.Options {
+			all := true
+			for _, id := range option {
+				if !satisfied[id] {
+					all = false
+					break
+				}
+			}
+			if all {
+				optionSatisfied = true
+				break
+			}
+		}
+		if optionSatisfied {
+			out = append(out, set)
+			continue
+		}
+		if set.Required {
+			return nil, fmt.Errorf("%w: required credential set %q was not satisfied", ErrOPAccessDenied, set.ID)
+		}
+	}
+	return out, nil
+}
+
+// verifyCredentialType confirms the presented credential's format-specific
+// type (vct for SD-JWT VC, type array for W3C) matches one of the types
+// the RP requested, so a credential of a different type cannot be
+// mislabelled as the requested one (§5.1.2).
+func (r ResolvedCredentialQuery) verifyCredentialType(claims map[string]any) error {
+	if len(r.Type) == 0 {
+		return nil
+	}
+	switch r.Format {
+	case openid4vp.FormatSDJWTVC:
+		vct, _ := claims["vct"].(string)
+		if !containsString(r.Type, vct) {
+			return fmt.Errorf("%w: presented vct %q does not match requested type", ErrOPAccessDenied, vct)
+		}
+	case openid4vp.FormatLdpVCDCQL, openid4vp.FormatJwtVCJson:
+		if types, ok := claims["type"].([]any); ok {
+			for _, want := range r.Type {
+				for _, got := range types {
+					if s, ok := got.(string); ok && s == want {
+						return nil
+					}
+				}
+			}
+			return fmt.Errorf("%w: presented type does not match requested type", ErrOPAccessDenied)
+		}
+	}
+	return nil
 }
 
 // postValidateValues enforces the Appendix A.4 rule that "values"
@@ -271,14 +383,4 @@ func assignClaim(dst map[string]any, path []string, value any) {
 		}
 		current = next
 	}
-}
-
-// deriveTrustStatus returns the initial trust_status the OP records on
-// a Credential Entry (§5.1.2, §8.3). A nil matcher yields "not_checked";
-// otherwise "valid" until finer-grained checks are wired in.
-func deriveTrustStatus(matcher openid4vp.TrustedAuthorityMatcher) TrustStatus {
-	if matcher == nil {
-		return TrustStatusNotChecked
-	}
-	return TrustStatusValid
 }

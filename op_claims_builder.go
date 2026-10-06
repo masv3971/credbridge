@@ -9,10 +9,14 @@ import (
 )
 
 // assemblePresentedCredentialSets turns the presentation result into the
-// array shape defined in Section 5.1.1.
-func (o *OP) assemblePresentedCredentialSets(result *OPPresentationResult) PresentedCredentialSets {
+// array shape defined in Section 5.1.1. When the request carried
+// credential_sets, each set is emitted from its first fully-satisfied
+// option; an unsatisfied REQUIRED set yields access_denied, while an
+// unsatisfied optional set is dropped rather than replaced by an
+// uncorrelated fallback.
+func (o *OP) assemblePresentedCredentialSets(result *OPPresentationResult) (PresentedCredentialSets, error) {
 	if len(result.SatisfiedSets) == 0 {
-		return PresentedCredentialSets{{Credentials: cloneEntries(result.Entries)}}
+		return PresentedCredentialSets{{Credentials: cloneEntries(result.Entries)}}, nil
 	}
 	sets := make(PresentedCredentialSets, 0, len(result.SatisfiedSets))
 	for _, s := range result.SatisfiedSets {
@@ -35,12 +39,13 @@ func (o *OP) assemblePresentedCredentialSets(result *OPPresentationResult) Prese
 		}
 		if len(set.Credentials) > 0 {
 			sets = append(sets, set)
+			continue
+		}
+		if s.Required {
+			return nil, fmt.Errorf("%w: required credential set %q is unsatisfied", ErrOPAccessDenied, s.ID)
 		}
 	}
-	if len(sets) == 0 {
-		return PresentedCredentialSets{{Credentials: cloneEntries(result.Entries)}}
-	}
-	return sets
+	return sets, nil
 }
 
 // cloneEntries returns a deep-ish copy of the entries map (the
@@ -59,7 +64,7 @@ func (o *OP) deriveSub(opSession *OPSession, sets PresentedCredentialSets) (stri
 	if err != nil {
 		return "", err
 	}
-	cfg, ok := o.subjectClaimConfigFor(sourceKey)
+	cfg, ok := o.subjectClaimConfigFor(opSession, sourceKey)
 	if !ok || len(cfg.SubjectClaim) == 0 {
 		return "", fmt.Errorf("%w: no subject_claim configured for credential type %q", ErrOPAccessDenied, sourceKey)
 	}
@@ -68,7 +73,7 @@ func (o *OP) deriveSub(opSession *OPSession, sets PresentedCredentialSets) (stri
 		return "", fmt.Errorf("%w: identity credential missing subject claim %v", ErrOPAccessDenied, cfg.SubjectClaim)
 	}
 	rawStr := fmt.Sprintf("%v", raw)
-	if len(o.cfg.PairwiseSalt) == 0 {
+	if o.cfg.SubjectType == OPSubjectTypePublic {
 		return rawStr, nil
 	}
 	h := hmac.New(sha256.New, o.cfg.PairwiseSalt)
@@ -77,15 +82,22 @@ func (o *OP) deriveSub(opSession *OPSession, sets PresentedCredentialSets) (stri
 }
 
 // subjectClaimConfigFor returns the configured OPCredentialTypeConfig
-// for key from credential_presentations_supported (§5.2), false when
-// the key does not name a configured scope.
-func (o *OP) subjectClaimConfigFor(key string) (OPCredentialTypeConfig, bool) {
+// for the credential key that sourced the subject. In scope-based mode
+// the key is the scope itself; in DCQL-based mode the key is the RP's
+// opaque Credential Query id, so the scope the OP bound to that id at
+// authorization time (ResolvedCredentialQuery.Scope) is used to recover
+// the configuration (§5.5 rule 3).
+func (o *OP) subjectClaimConfigFor(opSession *OPSession, key string) (OPCredentialTypeConfig, bool) {
 	if cfg, ok := o.cfg.CredentialPresentations[key]; ok {
 		return cfg, true
 	}
-	// DCQL-based mode: the key is an RP-chosen id; the scope is not
-	// recoverable in general. Fall back to the first configured entry
-	// whose type matches. Documented behaviour per §5.5 rule 3.
+	for _, rq := range opSession.DCQL.Credentials {
+		if rq.ID == key && rq.Scope != "" {
+			if cfg, ok := o.cfg.CredentialPresentations[rq.Scope]; ok {
+				return cfg, true
+			}
+		}
+	}
 	return OPCredentialTypeConfig{}, false
 }
 

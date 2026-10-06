@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// idTokenClockSkewSeconds is the leeway allowed when validating ID Token
+// exp/iat against the local clock (RFC §7.1, OIDC Core §3.1.3.7).
+const idTokenClockSkewSeconds int64 = 120
 
 // RPClaims is the decoded ID Token / UserInfo payload with the bridge
 // claim exposed as a typed slice.
@@ -15,6 +18,7 @@ type RPClaims struct {
 	Issuer                  string
 	Subject                 string
 	Audience                string
+	Audiences               []string
 	IssuedAt                int64
 	ExpiresAt               int64
 	Nonce                   string
@@ -35,9 +39,9 @@ type RPClaims struct {
 //
 // Standard claim checks that ParseIDToken performs regardless:
 //   - iss must equal RPConfig.IssuerURL.
-//   - aud must equal RPConfig.ClientID.
-//   - nonce must equal expectedNonce (may be empty to skip).
-//   - iat and exp must be present.
+//   - aud must contain RPConfig.ClientID.
+//   - nonce must equal expectedNonce (required and compared).
+//   - iat and exp must be present, and exp must be in the future.
 func (r *RP) ParseIDToken(_ context.Context, idToken, expectedNonce string) (*RPClaims, error) {
 	claims := jwt.MapClaims{}
 	if _, _, err := jwt.NewParser(jwt.WithoutClaimsValidation()).ParseUnverified(idToken, claims); err != nil {
@@ -68,23 +72,36 @@ func (r *RP) parseClaimsMap(claims map[string]any, expectedNonce string, checkSt
 	if v, ok := claims["sub"].(string); ok {
 		rc.Subject = v
 	}
-	rc.Audience = extractAudience(claims["aud"])
+	rc.Audiences = extractAudiences(claims["aud"])
+	if len(rc.Audiences) > 0 {
+		rc.Audience = rc.Audiences[0]
+	}
 	rc.IssuedAt = extractInt64(claims["iat"])
 	rc.ExpiresAt = extractInt64(claims["exp"])
 	if v, ok := claims["nonce"].(string); ok {
 		rc.Nonce = v
 	}
 	if checkStandard {
-		if strings.TrimRight(rc.Issuer, "/") != strings.TrimRight(r.cfg.IssuerURL, "/") {
+		if rc.Issuer != r.cfg.IssuerURL {
 			return nil, fmt.Errorf("%w: iss mismatch: got %q", ErrRPIDTokenInvalid, rc.Issuer)
 		}
-		if rc.Audience != r.cfg.ClientID {
-			return nil, fmt.Errorf("%w: aud mismatch: got %q", ErrRPIDTokenInvalid, rc.Audience)
+		if !containsString(rc.Audiences, r.cfg.ClientID) {
+			return nil, fmt.Errorf("%w: aud mismatch: got %v", ErrRPIDTokenInvalid, rc.Audiences)
 		}
 		if rc.IssuedAt == 0 || rc.ExpiresAt == 0 {
 			return nil, fmt.Errorf("%w: iat or exp missing", ErrRPIDTokenInvalid)
 		}
-		if expectedNonce != "" && rc.Nonce != expectedNonce {
+		now := r.now().Unix()
+		if rc.ExpiresAt <= now-idTokenClockSkewSeconds {
+			return nil, fmt.Errorf("%w: token expired", ErrRPIDTokenInvalid)
+		}
+		if rc.IssuedAt > now+idTokenClockSkewSeconds {
+			return nil, fmt.Errorf("%w: iat is too far in the future", ErrRPIDTokenInvalid)
+		}
+		if expectedNonce == "" {
+			return nil, fmt.Errorf("%w: expected nonce is required for ID Token validation", ErrRPIDTokenInvalid)
+		}
+		if rc.Nonce != expectedNonce {
 			return nil, fmt.Errorf("%w: nonce mismatch", ErrRPIDTokenInvalid)
 		}
 	}
@@ -100,20 +117,36 @@ func (r *RP) parseClaimsMap(claims map[string]any, expectedNonce string, checkSt
 	return rc, nil
 }
 
-// extractAudience returns the JWT "aud" value as a single string,
-// coping with both the string and array forms permitted by RFC 7519.
-func extractAudience(v any) string {
+// extractAudiences returns the JWT "aud" value as a slice of strings,
+// coping with both the string and array forms permitted by RFC 7519 and
+// preserving every entry so membership (and azp) checks are possible.
+func extractAudiences(v any) []string {
 	switch a := v.(type) {
 	case string:
-		return a
+		if a == "" {
+			return nil
+		}
+		return []string{a}
 	case []any:
-		if len(a) > 0 {
-			if s, ok := a[0].(string); ok {
-				return s
+		out := make([]string, 0, len(a))
+		for _, e := range a {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
 			}
 		}
+		return out
 	}
-	return ""
+	return nil
+}
+
+// containsString reports whether target is present in list.
+func containsString(list []string, target string) bool {
+	for _, s := range list {
+		if s == target {
+			return true
+		}
+	}
+	return false
 }
 
 // extractInt64 converts a JWT NumericDate value to int64 regardless of

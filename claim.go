@@ -124,6 +124,22 @@ func (v HolderBinding) IsRegistered() bool {
 	return false
 }
 
+// reservedEntryKeys is the full set of JSON member names the typed
+// CredentialEntry model owns (§5.1.2). AdditionalFields may not use any
+// of them, even when the typed value is currently empty and would be
+// dropped by omitempty.
+var reservedEntryKeys = map[string]struct{}{
+	"type": {}, "issuer": {}, "valid_from": {}, "valid_until": {},
+	"verified_at": {}, "verification": {}, "claims": {},
+	"namespaces": {}, "digest": {}, "primary": {},
+}
+
+// reservedVerificationKeys is the full set of JSON member names the typed
+// Verification model owns (§5.1.2).
+var reservedVerificationKeys = map[string]struct{}{
+	"holder_binding": {}, "trust_status": {}, "protected_headers": {}, "crit": {},
+}
+
 // MarshalJSON serialises a CredentialEntry, flattening any
 // AdditionalFields into the top level of the JSON object.
 func (e CredentialEntry) MarshalJSON() ([]byte, error) {
@@ -140,6 +156,9 @@ func (e CredentialEntry) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	for k, v := range e.AdditionalFields {
+		if _, reserved := reservedEntryKeys[k]; reserved {
+			return nil, fmt.Errorf("credbridge: additional field %q collides with a reserved member", k)
+		}
 		if _, exists := obj[k]; exists {
 			return nil, fmt.Errorf("credbridge: additional field %q collides with a reserved member", k)
 		}
@@ -167,14 +186,9 @@ func (e *CredentialEntry) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	known := map[string]struct{}{
-		"type": {}, "issuer": {}, "valid_from": {}, "valid_until": {},
-		"verified_at": {}, "verification": {}, "claims": {},
-		"namespaces": {}, "digest": {}, "primary": {},
-	}
 	var extras map[string]any
 	for k, v := range raw {
-		if _, ok := known[k]; ok {
+		if _, ok := reservedEntryKeys[k]; ok {
 			continue
 		}
 		var val any
@@ -205,6 +219,9 @@ func (v Verification) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	for k, val := range v.AdditionalMembers {
+		if _, reserved := reservedVerificationKeys[k]; reserved {
+			return nil, fmt.Errorf("credbridge: additional verification member %q collides with a reserved member", k)
+		}
 		if _, exists := obj[k]; exists {
 			return nil, fmt.Errorf("credbridge: additional verification member %q collides with a reserved member", k)
 		}
@@ -231,15 +248,9 @@ func (v *Verification) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	known := map[string]struct{}{
-		"holder_binding":    {},
-		"trust_status":      {},
-		"protected_headers": {},
-		"crit":              {},
-	}
 	var extras map[string]any
 	for k, val := range raw {
-		if _, ok := known[k]; ok {
+		if _, ok := reservedVerificationKeys[k]; ok {
 			continue
 		}
 		var out any

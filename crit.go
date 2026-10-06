@@ -46,6 +46,29 @@ func EvaluateCrit(entry CredentialEntry, understoodMembers ...string) error {
 		if _, ok := understood[name]; !ok {
 			return fmt.Errorf("credbridge: %w: crit member %q is not understood by the RP", ErrCritUnknownMember, name)
 		}
+		if err := entry.Verification.critValueUnderstood(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// critValueUnderstood checks that a critical standard member carries a
+// value from its registry (§8.3 / §8.4). Understanding a member by name
+// is not enough: the RP must also recognise the value's semantics, so an
+// unregistered trust_status or holder_binding value flagged critical is
+// rejected. Members without a registry (e.g. protected_headers, custom
+// extensions) are value-checked by the caller's extension logic, not here.
+func (v *Verification) critValueUnderstood(name string) error {
+	switch name {
+	case "trust_status":
+		if !v.TrustStatus.IsRegistered() {
+			return fmt.Errorf("credbridge: %w: crit trust_status value %q is not a registered value", ErrCritUnknownMember, v.TrustStatus)
+		}
+	case "holder_binding":
+		if !v.HolderBinding.IsRegistered() {
+			return fmt.Errorf("credbridge: %w: crit holder_binding value %q is not a registered value", ErrCritUnknownMember, v.HolderBinding)
+		}
 	}
 	return nil
 }

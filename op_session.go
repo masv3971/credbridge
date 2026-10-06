@@ -1,5 +1,7 @@
 package credbridge
 
+import "github.com/SUNET/vc/pkg/openid4vp"
+
 // OPSession is the per-authentication state the OP threads through the
 // bridge flow. The caller may treat it as opaque outside tests.
 type OPSession struct {
@@ -50,9 +52,17 @@ type ResolvedCredentialQuery struct {
 	// means "all pre-registered claims" (scope-based mode or omitted
 	// DCQL claims member).
 	Claims []ResolvedClaim
+	// TrustedAuthorities is the RP's trusted_authorities constraint after
+	// the OP's SSRF allowlist has been applied (Section 7.4). Response
+	// validation enforces it against each presented credential.
+	TrustedAuthorities []openid4vp.TrustedAuthority
 	// TrustedAuthorityAllowed reports whether the OP's SSRF allowlist
 	// admitted at least one of the trusted_authorities entries.
 	TrustedAuthorityAllowed bool
+	// RequireCryptographicHolderBinding carries the RP's effective
+	// require_cryptographic_holder_binding constraint (OpenID4VP §6.1,
+	// default true) so response validation can enforce holder binding.
+	RequireCryptographicHolderBinding bool
 	// ClaimSets is the DCQL "claim_sets" alternation, if any. Each
 	// inner array lists claim IDs (matching ResolvedClaim.ID).
 	ClaimSets [][]string

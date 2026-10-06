@@ -79,17 +79,25 @@ func (o *OP) StartAuthorization(ctx context.Context, req OPAuthorizationRequest)
 
 	nonce := req.Nonce
 	if nonce == "" {
-		nonce = randomToken()
+		generated, err := randomToken()
+		if err != nil {
+			return nil, err
+		}
+		nonce = generated
 	}
 
+	sessionID, err := randomToken()
+	if err != nil {
+		return nil, err
+	}
 	opSession := &OPSession{
-		ID:                  randomToken(),
+		ID:                  sessionID,
 		ClientID:            req.ClientID,
 		RedirectURI:         req.RedirectURI,
 		State:               req.State,
 		Nonce:               nonce,
 		RequestedScopes:     supported,
-		DCQL:       resolvedDCQL,
+		DCQL:                resolvedDCQL,
 		RPDCQLQuerySupplied: req.DCQLQuery != nil,
 		CreatedAt:           o.now().Unix(),
 	}
@@ -125,10 +133,15 @@ func (o *OP) validateRPQueryProfile(q *openid4vp.DCQL, scopes []string) error {
 	for scope, cfg := range o.cfg.CredentialPresentations {
 		typeToScope[typeKey(cfg.Format, cfg.Type)] = scope
 	}
+	seenQueryIDs := make(map[string]struct{}, len(q.Credentials))
 	for _, cq := range q.Credentials {
 		if !isValidDCQLID(cq.ID) {
 			return fmt.Errorf("%w: credential query id %q violates OpenID4VP \u00a76.1 charset", ErrOPInvalidRequest, cq.ID)
 		}
+		if _, dup := seenQueryIDs[cq.ID]; dup {
+			return fmt.Errorf("%w: duplicate credential query id %q", ErrOPInvalidRequest, cq.ID)
+		}
+		seenQueryIDs[cq.ID] = struct{}{}
 		if strings.HasPrefix(cq.ID, BridgeIDPrefix) {
 			return fmt.Errorf("%w: %q", ErrOPBridgePrefixReserved, cq.ID)
 		}
@@ -140,9 +153,13 @@ func (o *OP) validateRPQueryProfile(q *openid4vp.DCQL, scopes []string) error {
 		if len(cq.ClaimSet) > 0 {
 			ids := make(map[string]struct{}, len(cq.Claims))
 			for _, cl := range cq.Claims {
-				if cl.ID != "" {
-					ids[cl.ID] = struct{}{}
+				if cl.ID == "" {
+					return fmt.Errorf("%w: claim_sets present but a claim is missing the required id", ErrOPInvalidRequest)
 				}
+				if _, dup := ids[cl.ID]; dup {
+					return fmt.Errorf("%w: duplicate claim id %q", ErrOPInvalidRequest, cl.ID)
+				}
+				ids[cl.ID] = struct{}{}
 			}
 			for _, option := range cq.ClaimSet {
 				for _, ref := range option {
@@ -198,11 +215,14 @@ func metaTypeKey(cq openid4vp.CredentialQuery) (string, error) {
 }
 
 // randomToken returns a base64url-encoded random 24-byte string used
-// as an OP-generated OIDC nonce fallback (§7.1) and OPSession id.
-func randomToken() string {
+// as an OP-generated OIDC nonce fallback (§7.1) and OPSession id. It
+// returns an error when the system CSPRNG fails, so callers abort rather
+// than fall back to a predictable value that would collide session ids
+// and defeat nonce replay protection.
+func randomToken() (string, error) {
 	var b [24]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return fmt.Sprintf("nonce-%d", 0)
+		return "", fmt.Errorf("credbridge/op: read entropy: %w", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(b[:])
+	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
