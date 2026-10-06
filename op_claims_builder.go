@@ -86,7 +86,14 @@ func (o *OP) deriveSub(opSession *OPSession, sets PresentedCredentialSets) (stri
 		return "", fmt.Errorf("%w: identity credential missing subject claim %v", ErrOPAccessDenied, cfg.SubjectClaim)
 	}
 	if o.cfg.SubjectType == OPSubjectTypePublic {
-		return fmt.Sprintf("%v", raw), nil
+		// OIDC sub is a string identifier; coercing an arbitrary JSON value
+		// with %v is not injective ("1" and 1 collide) and an empty value is
+		// not a valid subject, so require a non-empty string.
+		s, ok := raw.(string)
+		if !ok || s == "" {
+			return "", fmt.Errorf("%w: subject claim %v must be a non-empty string", ErrOPAccessDenied, cfg.SubjectClaim)
+		}
+		return s, nil
 	}
 	// Canonically encode the typed subject claim and length-prefix each
 	// HMAC component so distinct (client_id, subject) pairs — and subject

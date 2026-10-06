@@ -105,6 +105,20 @@ func (r *RP) BuildAuthorizationURL(ctx context.Context, opts RPAuthorizationRequ
 	if base.Fragment != "" || base.RawFragment != "" {
 		return "", fmt.Errorf("credbridge/rp: authorization_endpoint must not contain a fragment")
 	}
+	if base.RawQuery != "" {
+		// Reserved parameters already present in the endpoint would survive
+		// the merge and duplicate the ones set below, making the request's
+		// interpretation OP-parser-dependent; reject them up front.
+		existing, err := url.ParseQuery(base.RawQuery)
+		if err != nil {
+			return "", fmt.Errorf("credbridge/rp: invalid authorization_endpoint query: %w", err)
+		}
+		for k := range existing {
+			if _, reserved := rpReservedAuthParams[k]; reserved {
+				return "", fmt.Errorf("credbridge/rp: authorization_endpoint must not pre-set reserved parameter %q", k)
+			}
+		}
+	}
 	if base.RawQuery == "" {
 		base.RawQuery = q.Encode()
 	} else {

@@ -84,8 +84,11 @@ func toFloat64(v any) (float64, bool) {
 		if math.IsNaN(n) || math.IsInf(n, 0) {
 			return 0, false
 		}
-		if n > maxSafe || n < -maxSafe {
-			return n, true
+		// An integral value beyond the IEEE-754 safe range cannot be
+		// compared without conflating distinct JSON integers (encoding/json
+		// rounds e.g. 9007199254740993 to ...992), so fail closed.
+		if n == math.Trunc(n) && (n > maxSafe || n < -maxSafe) {
+			return 0, false
 		}
 		return n, true
 	}
