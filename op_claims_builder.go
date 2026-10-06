@@ -4,7 +4,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"hash"
 	"sort"
 )
 
@@ -82,13 +85,31 @@ func (o *OP) deriveSub(opSession *OPSession, sets PresentedCredentialSets) (stri
 	if !ok {
 		return "", fmt.Errorf("%w: identity credential missing subject claim %v", ErrOPAccessDenied, cfg.SubjectClaim)
 	}
-	rawStr := fmt.Sprintf("%v", raw)
 	if o.cfg.SubjectType == OPSubjectTypePublic {
-		return rawStr, nil
+		return fmt.Sprintf("%v", raw), nil
+	}
+	// Canonically encode the typed subject claim and length-prefix each
+	// HMAC component so distinct (client_id, subject) pairs — and subject
+	// values of different JSON types such as "1" and 1 — can never hash to
+	// the same pairwise sub.
+	subjectBytes, err := json.Marshal(raw)
+	if err != nil {
+		return "", fmt.Errorf("%w: encode subject claim: %v", ErrOPAccessDenied, err)
 	}
 	h := hmac.New(sha256.New, o.cfg.PairwiseSalt)
-	fmt.Fprintf(h, "%s|%s", opSession.ClientID, rawStr)
+	writeLengthPrefixed(h, []byte(opSession.ClientID))
+	writeLengthPrefixed(h, subjectBytes)
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil)), nil
+}
+
+// writeLengthPrefixed writes an 8-byte big-endian length header followed
+// by b so that components concatenated into an HMAC are unambiguous
+// regardless of the bytes each component contains.
+func writeLengthPrefixed(h hash.Hash, b []byte) {
+	var hdr [8]byte
+	binary.BigEndian.PutUint64(hdr[:], uint64(len(b)))
+	h.Write(hdr[:])
+	h.Write(b)
 }
 
 // subjectClaimConfigFor returns the configured OPCredentialTypeConfig

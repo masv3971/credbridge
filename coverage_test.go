@@ -516,6 +516,24 @@ func TestOP_SubDerivation_Primary(t *testing.T) {
 func TestOP_DCQLMetaTypeSwitch(t *testing.T) {
 	ctx := t.Context()
 	sig := testsigner.MustNew()
+
+	// mso_mdoc is rejected at configuration time: the pinned extractor
+	// cannot expose the docType, so a scope advertising it could never be
+	// fulfilled at presentation.
+	// #nosec G101 -- test fixture; PairwiseSalt is not a credential.
+	_, err := credbridge.NewOP(ctx, credbridge.OPConfig{
+		Issuer:                "https://op",
+		AuthorizationEndpoint: "https://op/authorize",
+		TokenEndpoint:         "https://op/token",
+		Signer:                sig,
+		DCQLQuerySupported:    true,
+		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
+			"mdl": {Format: openid4vp.FormatMsoMdoc, Type: []string{"org.iso.18013.5.1.mDL"}, SubjectClaim: []string{"family_name"}},
+		},
+		PairwiseSalt: []byte("salt"),
+	})
+	require.Error(t, err, "mso_mdoc config must be rejected")
+
 	// #nosec G101 -- test fixture; PairwiseSalt is not a credential.
 	op, err := credbridge.NewOP(ctx, credbridge.OPConfig{
 		Issuer:                "https://op",
@@ -524,23 +542,12 @@ func TestOP_DCQLMetaTypeSwitch(t *testing.T) {
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
-			"mdl":    {Format: openid4vp.FormatMsoMdoc, Type: []string{"org.iso.18013.5.1.mDL"}, SubjectClaim: []string{"family_name"}},
 			"degree": {Format: openid4vp.FormatJwtVCJson, Type: []string{"VerifiableCredential", "UniversityDegreeCredential"}, SubjectClaim: []string{"degree"}},
 		},
 		PairwiseSalt: []byte("salt"),
 	})
 	require.NoError(t, err, "NewOP")
 	defer op.Close()
-
-	_, err = op.StartAuthorization(ctx, credbridge.OPAuthorizationRequest{
-		ClientID: "rp", RedirectURI: "https://rp.example.org/cb", Nonce: "n",
-		Scopes: []string{"mdl"},
-		DCQLQuery: &openid4vp.DCQL{Credentials: []openid4vp.CredentialQuery{{
-			ID: "mdl", Format: openid4vp.FormatMsoMdoc,
-			Meta: openid4vp.MetaQuery{DoctypeValue: "org.iso.18013.5.1.mDL"},
-		}}},
-	})
-	assert.NoError(t, err, "mdoc StartAuthorization")
 
 	_, err = op.StartAuthorization(ctx, credbridge.OPAuthorizationRequest{
 		ClientID: "rp", RedirectURI: "https://rp.example.org/cb", Nonce: "n2",
@@ -552,10 +559,23 @@ func TestOP_DCQLMetaTypeSwitch(t *testing.T) {
 	})
 	assert.NoError(t, err, "w3c StartAuthorization")
 
-	// Missing meta values must be rejected.
+	// An RP DCQL targeting mso_mdoc now has no supporting scope and is
+	// rejected as an unsupported type, while still exercising the
+	// metaTypeKey mdoc branch.
 	_, err = op.StartAuthorization(ctx, credbridge.OPAuthorizationRequest{
 		ClientID: "rp", RedirectURI: "https://rp.example.org/cb", Nonce: "n3",
-		Scopes: []string{"mdl"},
+		Scopes: []string{"degree"},
+		DCQLQuery: &openid4vp.DCQL{Credentials: []openid4vp.CredentialQuery{{
+			ID: "mdl", Format: openid4vp.FormatMsoMdoc,
+			Meta: openid4vp.MetaQuery{DoctypeValue: "org.iso.18013.5.1.mDL"},
+		}}},
+	})
+	assert.Error(t, err, "mso_mdoc query must be rejected as unsupported")
+
+	// A missing doctype_value is still rejected by metaTypeKey.
+	_, err = op.StartAuthorization(ctx, credbridge.OPAuthorizationRequest{
+		ClientID: "rp", RedirectURI: "https://rp.example.org/cb", Nonce: "n4",
+		Scopes: []string{"degree"},
 		DCQLQuery: &openid4vp.DCQL{Credentials: []openid4vp.CredentialQuery{{
 			ID: "mdl", Format: openid4vp.FormatMsoMdoc,
 		}}},

@@ -228,14 +228,21 @@ func (c OPConfig) validate() error {
 // is skipped.
 func validateCredentialTypeConfig(scope string, cfg OPCredentialTypeConfig) error {
 	switch cfg.Format {
-	case openid4vp.FormatSDJWTVC, openid4vp.FormatLdpVCDCQL, openid4vp.FormatJwtVCJson:
+	case openid4vp.FormatSDJWTVC:
+		// SD-JWT VC metadata carries exactly one type value, the VCT.
+		if len(cfg.Type) != 1 {
+			return fmt.Errorf("credbridge/op: scope %q: SD-JWT VC Type must be exactly one vct value", scope)
+		}
+	case openid4vp.FormatLdpVCDCQL, openid4vp.FormatJwtVCJson:
 		if len(cfg.Type) == 0 {
 			return fmt.Errorf("credbridge/op: scope %q: Type must list at least one value for format %q", scope, cfg.Format)
 		}
 	case openid4vp.FormatMsoMdoc:
-		if len(cfg.Type) != 1 {
-			return fmt.Errorf("credbridge/op: scope %q: mso_mdoc Type must be exactly one doctype", scope)
-		}
+		// The pinned extractor auto-detects the token format and flattens
+		// mdoc namespaces without exposing the docType, so an mso_mdoc
+		// presentation can never be verified. Reject the configuration
+		// rather than advertise a credential type the OP can never fulfil.
+		return fmt.Errorf("credbridge/op: scope %q: mso_mdoc is unsupported until the extractor exposes the docType", scope)
 	default:
 		return fmt.Errorf("credbridge/op: scope %q: unsupported credential Format %q", scope, cfg.Format)
 	}
