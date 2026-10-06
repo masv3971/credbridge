@@ -88,7 +88,11 @@ func (r *RP) parseClaimsMap(claims map[string]any, expectedNonce string, checkSt
 	if v, ok := claims["sub"].(string); ok {
 		rc.Subject = v
 	}
-	rc.Audiences = extractAudiences(claims["aud"])
+	auds, err := extractAudiences(claims["aud"])
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRPIDTokenInvalid, err)
+	}
+	rc.Audiences = auds
 	if len(rc.Audiences) > 0 {
 		rc.Audience = rc.Audiences[0]
 	}
@@ -149,25 +153,33 @@ func (r *RP) parseClaimsMap(claims map[string]any, expectedNonce string, checkSt
 }
 
 // extractAudiences returns the JWT "aud" value as a slice of strings,
-// coping with both the string and array forms permitted by RFC 7519 and
-// preserving every entry so membership (and azp) checks are possible.
-func extractAudiences(v any) []string {
+// coping with both the string and array forms permitted by RFC 7519. A
+// present "aud" that is neither a string nor an array of strings — or an
+// array containing any non-string element — is malformed and rejected so
+// a value such as ["rp", 42] cannot be silently normalised to ["rp"] and
+// slip through audience validation. An absent "aud" yields (nil, nil).
+func extractAudiences(v any) ([]string, error) {
 	switch a := v.(type) {
+	case nil:
+		return nil, nil
 	case string:
 		if a == "" {
-			return nil
+			return nil, nil
 		}
-		return []string{a}
+		return []string{a}, nil
 	case []any:
 		out := make([]string, 0, len(a))
 		for _, e := range a {
-			if s, ok := e.(string); ok {
-				out = append(out, s)
+			s, ok := e.(string)
+			if !ok {
+				return nil, fmt.Errorf("aud array contains a non-string element")
 			}
+			out = append(out, s)
 		}
-		return out
+		return out, nil
+	default:
+		return nil, fmt.Errorf("aud must be a string or an array of strings")
 	}
-	return nil
 }
 
 // containsString reports whether target is present in list.
