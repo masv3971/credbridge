@@ -40,6 +40,7 @@ type RPClaims struct {
 // Standard claim checks that ParseIDToken performs regardless:
 //   - iss must equal RPConfig.IssuerURL.
 //   - aud must contain RPConfig.ClientID.
+//   - azp, when present, must equal RPConfig.ClientID.
 //   - nonce must equal expectedNonce (required and compared).
 //   - iat and exp must be present, and exp must be in the future.
 func (r *RP) ParseIDToken(_ context.Context, idToken, expectedNonce string) (*RPClaims, error) {
@@ -53,12 +54,26 @@ func (r *RP) ParseIDToken(_ context.Context, idToken, expectedNonce string) (*RP
 // FetchUserInfoClaims decodes a raw UserInfo JSON payload. It performs
 // no HTTP call — the caller is responsible for issuing the request with
 // the appropriate access token.
-func (r *RP) FetchUserInfoClaims(body []byte, expectedNonce string) (*RPClaims, error) {
+//
+// expectedSubject binds the UserInfo response to the ID Token: pass the
+// ID Token's sub so a response minted for a different subject is
+// rejected (OIDC Core §5.3.2). It is required.
+func (r *RP) FetchUserInfoClaims(body []byte, expectedSubject string) (*RPClaims, error) {
 	raw := map[string]any{}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("%w: parse: %v", ErrRPIDTokenInvalid, err)
 	}
-	return r.parseClaimsMap(raw, expectedNonce, false)
+	rc, err := r.parseClaimsMap(raw, "", false)
+	if err != nil {
+		return nil, err
+	}
+	if expectedSubject == "" {
+		return nil, fmt.Errorf("%w: expected subject is required to bind UserInfo to the ID Token", ErrRPIDTokenInvalid)
+	}
+	if rc.Subject != expectedSubject {
+		return nil, fmt.Errorf("%w: sub mismatch: UserInfo subject %q is not the ID Token subject", ErrRPIDTokenInvalid, rc.Subject)
+	}
+	return rc, nil
 }
 
 // parseClaimsMap extracts the standard claims and, when present, the
@@ -87,6 +102,12 @@ func (r *RP) parseClaimsMap(claims map[string]any, expectedNonce string, checkSt
 		}
 		if !containsString(rc.Audiences, r.cfg.ClientID) {
 			return nil, fmt.Errorf("%w: aud mismatch: got %v", ErrRPIDTokenInvalid, rc.Audiences)
+		}
+		// azp (authorized party) identifies the party the token was issued
+		// for; when present it must be this client even if the client is
+		// merely one of several audiences (OIDC Core §2).
+		if azp, ok := claims["azp"].(string); ok && azp != "" && azp != r.cfg.ClientID {
+			return nil, fmt.Errorf("%w: azp mismatch: got %q", ErrRPIDTokenInvalid, azp)
 		}
 		if rc.IssuedAt == 0 || rc.ExpiresAt == 0 {
 			return nil, fmt.Errorf("%w: iat or exp missing", ErrRPIDTokenInvalid)

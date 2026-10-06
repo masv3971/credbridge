@@ -13,9 +13,13 @@ import (
 // credential_sets, each set is emitted from its first fully-satisfied
 // option; an unsatisfied REQUIRED set yields access_denied, while an
 // unsatisfied optional set is dropped rather than replaced by an
-// uncorrelated fallback.
+// uncorrelated fallback. The single uncorrelated set is emitted only
+// when the request carried no credential_sets at all (scope-based mode).
 func (o *OP) assemblePresentedCredentialSets(result *OPPresentationResult) (PresentedCredentialSets, error) {
-	if len(result.SatisfiedSets) == 0 {
+	if result == nil {
+		return nil, fmt.Errorf("%w: nil presentation result", ErrOPAccessDenied)
+	}
+	if !result.CredentialSetsRequested {
 		return PresentedCredentialSets{{Credentials: cloneEntries(result.Entries)}}, nil
 	}
 	sets := make(PresentedCredentialSets, 0, len(result.SatisfiedSets))

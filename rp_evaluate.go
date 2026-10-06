@@ -24,7 +24,13 @@ func (rc *RPClaims) EvaluatePresentedCredentialSets(understoodVerificationMember
 		return ErrRPPresentedSetsMissing
 	}
 	for si, set := range rc.PresentedCredentialSets {
+		if len(set.Credentials) == 0 {
+			return fmt.Errorf("%w: credential set %d has no credentials", ErrRPUnexpectedResponseShape, si)
+		}
 		for key, entries := range set.Credentials {
+			if len(entries) == 0 {
+				return fmt.Errorf("%w: credential set %d %q has no credential entries", ErrRPUnexpectedResponseShape, si, key)
+			}
 			for ei, entry := range entries {
 				if err := validateEntryStructure(entry); err != nil {
 					return fmt.Errorf("credbridge/rp: set %d %q entry %d: %w", si, key, ei, err)

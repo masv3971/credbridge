@@ -117,7 +117,9 @@ func TestUserInfoRoundTrip(t *testing.T) {
 		RedirectURI: "https://rp.example.org/cb",
 	})
 	require.NoError(t, err, "NewRP")
-	claims, err := rp.FetchUserInfoClaims(body, "")
+	expectedSub, _ := payload["sub"].(string)
+	require.NotEmpty(t, expectedSub, "payload sub")
+	claims, err := rp.FetchUserInfoClaims(body, expectedSub)
 	require.NoError(t, err, "FetchUserInfoClaims")
 	entry, ok := claims.FirstEntry("", "ehic")
 	require.True(t, ok, "ehic entry missing from UserInfo")

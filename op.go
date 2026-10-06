@@ -203,6 +203,19 @@ func (c OPConfig) validate() error {
 	if len(c.CredentialPresentations) == 0 {
 		return errors.New("credbridge/op: OPConfig.CredentialPresentations must contain at least one entry")
 	}
+	// Two scopes advertising the same format+type would make the
+	// format→scope reverse index used during DCQL resolution ambiguous
+	// (a query could validate against one scope and resolve against
+	// another). Reject such a configuration rather than resolve it
+	// nondeterministically.
+	seenTypeKeys := make(map[string]string, len(c.CredentialPresentations))
+	for scope, cfg := range c.CredentialPresentations {
+		k := typeKey(cfg.Format, cfg.Type)
+		if other, dup := seenTypeKeys[k]; dup {
+			return fmt.Errorf("credbridge/op: scopes %q and %q both advertise format %q type %v; each credential type may be advertised by only one scope", other, scope, cfg.Format, cfg.Type)
+		}
+		seenTypeKeys[k] = scope
+	}
 	return nil
 }
 

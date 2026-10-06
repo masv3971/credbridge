@@ -34,6 +34,10 @@ func (m *RPDiscoveryMetadata) SupportsCredentialScope(scope string) bool {
 	return ok
 }
 
+// maxDiscoveryBodyBytes caps the discovery document size the RP will read
+// into memory (1 MiB), guarding against an oversized or malicious body.
+const maxDiscoveryBodyBytes int64 = 1 << 20
+
 type discoveryCache struct {
 	mu      sync.Mutex
 	value   *RPDiscoveryMetadata
@@ -64,9 +68,15 @@ func (r *RP) Discover(ctx context.Context) (*RPDiscoveryMetadata, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%w: status %s", ErrRPDiscoveryUnreachable, resp.Status)
 	}
-	body, err := io.ReadAll(resp.Body)
+	// Bound the response so a configured or compromised OP cannot exhaust
+	// RP memory by streaming an arbitrarily large body. Read one byte past
+	// the cap to detect overflow.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDiscoveryBodyBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("%w: read body: %v", ErrRPDiscoveryUnreachable, err)
+	}
+	if int64(len(body)) > maxDiscoveryBodyBytes {
+		return nil, fmt.Errorf("%w: discovery document exceeds %d bytes", ErrRPDiscoveryUnreachable, maxDiscoveryBodyBytes)
 	}
 	md := &RPDiscoveryMetadata{}
 	if err := json.Unmarshal(body, md); err != nil {

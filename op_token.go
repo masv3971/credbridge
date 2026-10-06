@@ -18,6 +18,9 @@ func (o *OP) IssueIDToken(ctx context.Context, opSession *OPSession, result *OPP
 	if opSession == nil {
 		return "", fmt.Errorf("%w: nil session", ErrOPAccessDenied)
 	}
+	if result == nil {
+		return "", fmt.Errorf("%w: nil presentation result", ErrOPAccessDenied)
+	}
 	if opts.TokenLifetimeSeconds < 0 {
 		return "", fmt.Errorf("%w: TokenLifetimeSeconds must not be negative", ErrOPInvalidRequest)
 	}
@@ -29,6 +32,12 @@ func (o *OP) IssueIDToken(ctx context.Context, opSession *OPSession, result *OPP
 	stored, err := o.storage.Get(ctx, opSession.ID)
 	if err != nil {
 		return "", fmt.Errorf("%w: session %q not found or already consumed: %v", ErrOPAccessDenied, opSession.ID, err)
+	}
+	// The result MUST have been produced for this session so a result
+	// minted for another transaction (or a caller-fabricated one) cannot
+	// be signed under this session's audience and nonce.
+	if result.sessionID == "" || result.sessionID != stored.ID {
+		return "", fmt.Errorf("%w: presentation result is not bound to session %q", ErrOPAccessDenied, stored.ID)
 	}
 	if err := o.storage.Delete(ctx, stored.ID); err != nil {
 		return "", fmt.Errorf("credbridge/op: consume session: %w", err)
@@ -75,6 +84,15 @@ type OPTokenOptions struct {
 // /userinfo. Callers that use signed UserInfo responses can pass the
 // returned map to jose.MakeJWT themselves.
 func (o *OP) UserInfoPayload(opSession *OPSession, result *OPPresentationResult) (map[string]any, error) {
+	if opSession == nil {
+		return nil, fmt.Errorf("%w: nil session", ErrOPAccessDenied)
+	}
+	if result == nil {
+		return nil, fmt.Errorf("%w: nil presentation result", ErrOPAccessDenied)
+	}
+	if result.sessionID == "" || result.sessionID != opSession.ID {
+		return nil, fmt.Errorf("%w: presentation result is not bound to session %q", ErrOPAccessDenied, opSession.ID)
+	}
 	sets, err := o.assemblePresentedCredentialSets(result)
 	if err != nil {
 		return nil, err

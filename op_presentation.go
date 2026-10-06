@@ -86,6 +86,15 @@ type OPPresentationResult struct {
 	// SatisfiedSets is populated from opSession.DCQL.CredentialSets when
 	// the RP requested one or more DCQL Credential Sets.
 	SatisfiedSets []ResolvedCredentialSet
+	// CredentialSetsRequested records whether the originating request
+	// carried credential_sets, so assembly can distinguish "no
+	// credential_sets (scope mode)" from "credential_sets requested but
+	// none satisfied" and never fabricate an uncorrelated fallback set.
+	CredentialSetsRequested bool
+	// sessionID binds this result to the OPSession it was produced for.
+	// It is unexported so a caller cannot fabricate a result and bind it
+	// to an unrelated session; IssueIDToken/UserInfoPayload verify it.
+	sessionID string
 }
 
 // HandleWalletResponse verifies resp against opSession.DCQL and
@@ -144,8 +153,10 @@ func (o *OP) HandleWalletResponse(ctx context.Context, opSession *OPSession, res
 		return nil, err
 	}
 	return &OPPresentationResult{
-		Entries:       entries,
-		SatisfiedSets: satisfiedSets,
+		Entries:                 entries,
+		SatisfiedSets:           satisfiedSets,
+		CredentialSetsRequested: len(opSession.DCQL.CredentialSets) > 0,
+		sessionID:               opSession.ID,
 	}, nil
 }
 
@@ -239,15 +250,23 @@ func (r ResolvedCredentialQuery) verifyCredentialType(claims map[string]any) err
 			return fmt.Errorf("%w: presented vct %q does not match requested type", ErrOPAccessDenied, vct)
 		}
 	case openid4vp.FormatLdpVCDCQL, openid4vp.FormatJwtVCJson:
-		if types, ok := claims["type"].([]any); ok {
-			for _, want := range r.Type {
-				for _, got := range types {
-					if s, ok := got.(string); ok && s == want {
-						return nil
-					}
-				}
+		// A W3C type_values inner array is an AND constraint: the
+		// credential must carry every requested type. A missing or
+		// non-array "type" claim is malformed and cannot satisfy it.
+		types, ok := claims["type"].([]any)
+		if !ok {
+			return fmt.Errorf("%w: presented credential has a missing or malformed type claim", ErrOPAccessDenied)
+		}
+		present := make(map[string]struct{}, len(types))
+		for _, got := range types {
+			if s, ok := got.(string); ok {
+				present[s] = struct{}{}
 			}
-			return fmt.Errorf("%w: presented type does not match requested type", ErrOPAccessDenied)
+		}
+		for _, want := range r.Type {
+			if _, ok := present[want]; !ok {
+				return fmt.Errorf("%w: presented type is missing required value %q", ErrOPAccessDenied, want)
+			}
 		}
 	}
 	return nil

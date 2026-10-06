@@ -471,7 +471,8 @@ func TestMatchValue_NumericBranches(t *testing.T) {
 	}
 }
 
-// selectIdentityEntry must prefer a primary=true entry.
+// Sub derivation must work for a presentation routed through the real
+// wallet-response flow (which binds the result to its session).
 func TestOP_SubDerivation_Primary(t *testing.T) {
 	ctx := t.Context()
 	sig := testsigner.MustNew()
@@ -496,12 +497,13 @@ func TestOP_SubDerivation_Primary(t *testing.T) {
 		Scopes: []string{"a", "b"},
 	})
 	require.NoError(t, err, "StartAuthorization")
-	result := &credbridge.OPPresentationResult{
-		Entries: map[string][]credbridge.CredentialEntry{
-			"a": {{Type: []string{"urn:t:a"}, Claims: map[string]any{"id": "A"}}},
-			"b": {{Type: []string{"urn:t:b"}, Claims: map[string]any{"id": "B"}, Primary: true}},
-		},
-	}
+	tokenA := testsigner.MustIssueJWT(sig, map[string]any{"vct": "urn:t:a", "id": "A"})
+	tokenB := testsigner.MustIssueJWT(sig, map[string]any{"vct": "urn:t:b", "id": "B"})
+	result, err := op.HandleWalletResponse(ctx, opSession, &openid4vp.VPResponse{
+		VPToken: map[string][]string{"a": {tokenA}, "b": {tokenB}},
+		State:   opSession.State,
+	}, nil)
+	require.NoError(t, err, "HandleWalletResponse")
 	payload, err := op.UserInfoPayload(opSession, result)
 	require.NoError(t, err, "UserInfoPayload")
 	sub, ok := payload["sub"].(string)

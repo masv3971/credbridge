@@ -162,6 +162,9 @@ func (o *OP) validateRPQueryProfile(q *openid4vp.DCQL, scopes []string) error {
 				ids[cl.ID] = struct{}{}
 			}
 			for _, option := range cq.ClaimSet {
+				if len(option) == 0 {
+					return fmt.Errorf("%w: claim_sets contains an empty option", ErrOPInvalidRequest)
+				}
 				for _, ref := range option {
 					if _, ok := ids[ref]; !ok {
 						return fmt.Errorf("%w: claim_sets references unknown claim id %q", ErrOPInvalidRequest, ref)

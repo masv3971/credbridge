@@ -212,9 +212,13 @@ func (o *OP) resolveCredentialQuery(cq openid4vp.CredentialQuery, scope string) 
 		}
 	}
 	for _, cl := range cq.Claims {
+		path, err := dcqlClaimPath(cl.Path)
+		if err != nil {
+			return ResolvedCredentialQuery{}, err
+		}
 		resolvedQuery.Claims = append(resolvedQuery.Claims, ResolvedClaim{
 			ID:     cl.ID,
-			Path:   stringPath(cl.Path),
+			Path:   path,
 			Values: append([]any(nil), cl.Values...),
 		})
 	}
@@ -266,18 +270,21 @@ func (o *OP) filterTrustedAuthorities(auths []openid4vp.TrustedAuthority) ([]ope
 	return kept, true, nil
 }
 
-// stringPath converts an openid4vp claim path ([]*string) into a
-// []string, mapping nil (JSON null) elements to empty strings.
-func stringPath(path []*string) []string {
+// dcqlClaimPath converts an openid4vp claim path ([]*string) into a
+// []string. A nil (JSON null) element selects every element of an array
+// per OpenID4VP §6.4; this profile's claim lookup only traverses objects,
+// so such a path is rejected with invalid_request at authorization time
+// rather than silently coerced to an empty object key that can never
+// match or be relayed.
+func dcqlClaimPath(path []*string) ([]string, error) {
 	out := make([]string, 0, len(path))
 	for _, p := range path {
 		if p == nil {
-			out = append(out, "")
-			continue
+			return nil, fmt.Errorf("%w: DCQL claim path contains a null (array-index) element, which this profile does not support", ErrOPInvalidRequest)
 		}
 		out = append(out, *p)
 	}
-	return out
+	return out, nil
 }
 
 // cloneOptions returns a deep copy of a DCQL options / claim_sets
