@@ -289,8 +289,12 @@ func validateEndpointUnderIssuer(name, endpoint string, issuer *url.URL) error {
 // through OPConfig.Storage and never call them directly.
 type OPStorage interface {
 	Put(ctx context.Context, opSession *OPSession) error
-	Get(ctx context.Context, id string) (*OPSession, error)
-	Delete(ctx context.Context, id string) error
+	// Consume atomically retrieves and removes the session with id. It
+	// MUST guarantee that only one concurrent caller can obtain a given
+	// session, so a single session can mint at most one ID Token even
+	// under concurrent IssueIDToken calls. It returns an error when no
+	// session is stored (or it has expired or was already consumed).
+	Consume(ctx context.Context, id string) (*OPSession, error)
 }
 
 // defaultOPSessionTTL is the retention window the built-in storage
@@ -330,18 +334,14 @@ func (s *defaultOPStorage) Put(_ context.Context, opSession *OPSession) error {
 	return nil
 }
 
-// Get returns the OPSession with id, or an error if none is stored
-// (or it has expired).
-func (s *defaultOPStorage) Get(_ context.Context, id string) (*OPSession, error) {
-	item := s.cache.Get(id)
-	if item == nil {
+// Consume atomically returns and removes the OPSession with id, or an
+// error if none is stored (or it has expired). GetAndDelete holds the
+// cache lock across the read and the delete, so two concurrent callers
+// cannot both obtain the same session.
+func (s *defaultOPStorage) Consume(_ context.Context, id string) (*OPSession, error) {
+	item, ok := s.cache.GetAndDelete(id)
+	if !ok || item == nil {
 		return nil, fmt.Errorf("credbridge/op: no session %q", id)
 	}
 	return item.Value(), nil
-}
-
-// Delete removes the OPSession with id (no-op if absent).
-func (s *defaultOPStorage) Delete(_ context.Context, id string) error {
-	s.cache.Delete(id)
-	return nil
 }

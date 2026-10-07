@@ -338,7 +338,7 @@ func TestOP_NestedClaimPathFilter(t *testing.T) {
 	assert.Error(t, err, "value mismatch must reject")
 }
 
-// A caller-provided OPStorage must satisfy the same Put/Get/Delete
+// A caller-provided OPStorage must satisfy the same Put/Consume
 // contract as the built-in default.
 func TestOP_CustomStorage(t *testing.T) {
 	storage := newTestStorage()
@@ -395,11 +395,15 @@ func (s *testStorage) Get(_ context.Context, id string) (*credbridge.OPSession, 
 	return sess, nil
 }
 
-func (s *testStorage) Delete(_ context.Context, id string) error {
+func (s *testStorage) Consume(_ context.Context, id string) (*credbridge.OPSession, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	sess, ok := s.data[id]
+	if !ok {
+		return nil, errNoSuchSession
+	}
 	delete(s.data, id)
-	return nil
+	return sess, nil
 }
 
 var errNoSuchSession = errors.New("testStorage: no such session")

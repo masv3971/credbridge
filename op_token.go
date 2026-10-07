@@ -24,23 +24,22 @@ func (o *OP) IssueIDToken(ctx context.Context, opSession *OPSession, result *OPP
 	if opts.TokenLifetimeSeconds < 0 {
 		return "", fmt.Errorf("%w: TokenLifetimeSeconds must not be negative", ErrOPInvalidRequest)
 	}
-	// Atomically consume the stored session: retrieving then deleting it
-	// before minting ensures a stale, expired, or already-consumed
-	// session cannot be replayed to mint a second token. The stored copy
-	// (not the caller-supplied pointer) is the source of truth for the
-	// minted claims.
-	stored, err := o.storage.Get(ctx, opSession.ID)
-	if err != nil {
-		return "", fmt.Errorf("%w: session %q not found or already consumed: %v", ErrOPAccessDenied, opSession.ID, err)
-	}
 	// The result MUST have been produced for this session so a result
 	// minted for another transaction (or a caller-fabricated one) cannot
-	// be signed under this session's audience and nonce.
-	if result.sessionID == "" || result.sessionID != stored.ID {
-		return "", fmt.Errorf("%w: presentation result is not bound to session %q", ErrOPAccessDenied, stored.ID)
+	// be signed under this session's audience and nonce. Checked against
+	// the caller-supplied id before consuming so a mismatched result does
+	// not burn the stored session.
+	if result.sessionID == "" || result.sessionID != opSession.ID {
+		return "", fmt.Errorf("%w: presentation result is not bound to session %q", ErrOPAccessDenied, opSession.ID)
 	}
-	if err := o.storage.Delete(ctx, stored.ID); err != nil {
-		return "", fmt.Errorf("credbridge/op: consume session: %w", err)
+	// Atomically consume the stored session so a stale, expired, or
+	// already-consumed session cannot be replayed, and two concurrent
+	// calls cannot both mint a token from the same session. The stored
+	// copy (not the caller-supplied pointer) is the source of truth for
+	// the minted claims.
+	stored, err := o.storage.Consume(ctx, opSession.ID)
+	if err != nil {
+		return "", fmt.Errorf("%w: session %q not found or already consumed: %v", ErrOPAccessDenied, opSession.ID, err)
 	}
 	opSession = stored
 
