@@ -157,6 +157,14 @@ func TestRP_EvaluatePresentedCredentialSets(t *testing.T) {
 	}}}
 	assert.ErrorIs(t, neither.EvaluatePresentedCredentialSets(), credbridge.ErrRPUnexpectedResponseShape)
 
+	// An empty claims object is a present member and is valid.
+	emptyClaims := &credbridge.RPClaims{PresentedCredentialSets: credbridge.PresentedCredentialSets{{
+		Credentials: map[string][]credbridge.CredentialEntry{
+			"ehic": {{Type: []string{"vc"}, Claims: map[string]any{}}},
+		},
+	}}}
+	assert.NoError(t, emptyClaims.EvaluatePresentedCredentialSets())
+
 	// Entry with both claims and namespaces.
 	both := &credbridge.RPClaims{PresentedCredentialSets: credbridge.PresentedCredentialSets{{
 		Credentials: map[string][]credbridge.CredentialEntry{
@@ -180,6 +188,16 @@ func TestRP_EvaluatePresentedCredentialSets(t *testing.T) {
 		},
 	}}}
 	assert.ErrorIs(t, noTrust.EvaluatePresentedCredentialSets(), credbridge.ErrRPUnexpectedResponseShape)
+
+	// Duplicate non-empty credential_set_id values are ambiguous.
+	entry := map[string][]credbridge.CredentialEntry{
+		"ehic": {{Type: []string{"vc"}, Claims: map[string]any{"a": "b"}}},
+	}
+	dupIDs := &credbridge.RPClaims{PresentedCredentialSets: credbridge.PresentedCredentialSets{
+		{CredentialSetID: "s", Credentials: entry},
+		{CredentialSetID: "s", Credentials: entry},
+	}}
+	assert.ErrorIs(t, dupIDs.EvaluatePresentedCredentialSets(), credbridge.ErrRPUnexpectedResponseShape)
 
 	// Unsatisfiable crit must surface.
 	badCrit := &credbridge.RPClaims{PresentedCredentialSets: credbridge.PresentedCredentialSets{{

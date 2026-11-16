@@ -153,12 +153,22 @@ func (e CredentialEntry) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(e.AdditionalFields) == 0 {
+	// omitempty drops a non-nil empty map, but member presence is what
+	// §5.1.2 constrains.
+	emptyClaims := e.Claims != nil && len(e.Claims) == 0
+	emptyNamespaces := e.Namespaces != nil && len(e.Namespaces) == 0
+	if len(e.AdditionalFields) == 0 && !emptyClaims && !emptyNamespaces {
 		return base, nil
 	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(base, &obj); err != nil {
 		return nil, err
+	}
+	if emptyClaims {
+		obj["claims"] = json.RawMessage("{}")
+	}
+	if emptyNamespaces {
+		obj["namespaces"] = json.RawMessage("{}")
 	}
 	for k, v := range e.AdditionalFields {
 		if _, reserved := reservedEntryKeys[k]; reserved {

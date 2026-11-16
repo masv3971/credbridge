@@ -13,7 +13,9 @@ import (
 //
 // After the token is issued the session-level credential payload is
 // dropped from the session store, honouring the Section 6.4 fresh-
-// presentation retention rule for the ID Token delivery channel.
+// presentation retention rule for the ID Token delivery channel. When
+// issuance fails after the session was consumed, the session is stored
+// again so the caller can retry.
 func (o *OP) IssueIDToken(ctx context.Context, opSession *OPSession, result *OPPresentationResult, opts OPTokenOptions) (string, error) {
 	if opSession == nil {
 		return "", fmt.Errorf("%w: nil session", ErrOPAccessDenied)
@@ -43,6 +45,15 @@ func (o *OP) IssueIDToken(ctx context.Context, opSession *OPSession, result *OPP
 	}
 	opSession = stored
 
+	// Consume stays the single-use gate; a failed issuance puts the session
+	// back so the authorization can be retried.
+	issued := false
+	defer func() {
+		if !issued {
+			_ = o.storage.Put(ctx, stored)
+		}
+	}()
+
 	sets, err := o.assemblePresentedCredentialSets(result)
 	if err != nil {
 		return "", err
@@ -69,6 +80,7 @@ func (o *OP) IssueIDToken(ctx context.Context, opSession *OPSession, result *OPP
 	if err != nil {
 		return "", fmt.Errorf("credbridge/op: sign id token: %w", err)
 	}
+	issued = true
 	return tok, nil
 }
 

@@ -13,6 +13,7 @@ import "fmt"
 //     via [EvaluateCrit].
 //  4. Unknown top-level members of a Credential Entry that are not
 //     listed in crit are silently ignored (§4.2 item 4).
+//  5. Non-empty credential_set_id values are unique across sets.
 //
 // understoodVerificationMembers is the set of additional Verification
 // members the RP claims to understand. Standard members
@@ -23,9 +24,16 @@ func (rc *RPClaims) EvaluatePresentedCredentialSets(understoodVerificationMember
 	if rc == nil || len(rc.PresentedCredentialSets) == 0 {
 		return ErrRPPresentedSetsMissing
 	}
+	seenSetIDs := make(map[string]struct{}, len(rc.PresentedCredentialSets))
 	for si, set := range rc.PresentedCredentialSets {
 		if len(set.Credentials) == 0 {
 			return fmt.Errorf("%w: credential set %d has no credentials", ErrRPUnexpectedResponseShape, si)
+		}
+		if set.CredentialSetID != "" {
+			if _, dup := seenSetIDs[set.CredentialSetID]; dup {
+				return fmt.Errorf("%w: duplicate credential_set_id %q", ErrRPUnexpectedResponseShape, set.CredentialSetID)
+			}
+			seenSetIDs[set.CredentialSetID] = struct{}{}
 		}
 		primaryCount := 0
 		for key, entries := range set.Credentials {
@@ -53,14 +61,14 @@ func (rc *RPClaims) EvaluatePresentedCredentialSets(understoodVerificationMember
 
 // validateEntryStructure enforces the Section 5.1.2 shape of a Credential
 // Entry before any crit evaluation: type is required, exactly one of
-// claims or namespaces must be populated, and a present verification
+// claims or namespaces must be present (an empty object counts), and a present verification
 // object must carry the required trust_status member.
 func validateEntryStructure(e CredentialEntry) error {
 	if len(e.Type) == 0 {
 		return fmt.Errorf("%w: credential entry is missing the required type", ErrRPUnexpectedResponseShape)
 	}
-	hasClaims := len(e.Claims) > 0
-	hasNamespaces := len(e.Namespaces) > 0
+	hasClaims := e.Claims != nil
+	hasNamespaces := e.Namespaces != nil
 	if hasClaims == hasNamespaces {
 		return fmt.Errorf("%w: credential entry must populate exactly one of claims or namespaces", ErrRPUnexpectedResponseShape)
 	}

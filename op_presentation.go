@@ -191,7 +191,7 @@ func (o *OP) resolveQueryEntries(ctx context.Context, extractor *openid4vp.Claim
 		}
 		filtered := resolvedQuery.filterClaims(claims, matchedOption)
 		queryEntries = append(queryEntries, CredentialEntry{
-			Type:   append([]string(nil), resolvedQuery.Type...),
+			Type:   resolvedQuery.entryType(claims),
 			Claims: filtered,
 			Verification: &Verification{
 				TrustStatus: TrustStatusNotChecked,
@@ -288,6 +288,26 @@ func (r ResolvedCredentialQuery) verifyCredentialType(claims map[string]any) err
 		}
 	}
 	return nil
+}
+
+// entryType returns the Credential Entry "type" array. W3C credentials
+// keep their full presented type array (§5.1.2), which may be a superset
+// of the requested types; other formats use the requested type.
+func (r ResolvedCredentialQuery) entryType(claims map[string]any) []string {
+	if r.Format == openid4vp.FormatLdpVCDCQL || r.Format == openid4vp.FormatJwtVCJson {
+		if types, ok := claims["type"].([]any); ok {
+			out := make([]string, 0, len(types))
+			for _, t := range types {
+				if s, ok := t.(string); ok {
+					out = append(out, s)
+				}
+			}
+			if len(out) > 0 {
+				return out
+			}
+		}
+	}
+	return append([]string(nil), r.Type...)
 }
 
 // postValidateValues enforces the Appendix A.4 rule that "values"

@@ -24,7 +24,7 @@ DOCKER_TAG              := $(REGISTRY)/$(NAME):$(VERSION)
 # Development Environment
 # ==============================================================================
 
-vscode: install-gh ## Set up VS Code development environment
+vscode: gh-install ## Set up VS Code development environment
 	$(info Installing go packages)
 	go install github.com/securego/gosec/v2/cmd/gosec@latest && \
 	go install golang.org/x/vuln/cmd/govulncheck@latest && \
@@ -32,20 +32,25 @@ vscode: install-gh ## Set up VS Code development environment
 	go install golang.org/x/tools/cmd/deadcode@latest && \
 	go install mvdan.cc/gofumpt@latest
 
-install-gh: ## Install the GitHub CLI (gh) if it is not already present
-	@if command -v gh >/dev/null 2>&1; then \
-		echo "gh already installed: $$(gh --version | head -n1)"; \
-	else \
-		echo "Installing GitHub CLI (gh)..."; \
-		type -p curl >/dev/null || sudo apt-get install -y curl; \
-		curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
-			sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg; \
-		sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg; \
-		echo "deb [arch=$$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | \
-			sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null; \
-		sudo apt-get update; \
+gh-install: ## Install GitHub CLI (gh)
+	$(info Install GitHub CLI)
+	@if ! command -v gh >/dev/null 2>&1; then \
+		sudo mkdir -p -m 755 /etc/apt/keyrings && \
+		curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
+		sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+		echo "deb [arch=$$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+		sudo apt-get update && \
 		sudo apt-get install -y gh; \
-		echo "gh installed: $$(gh --version | head -n1)"; \
+	else \
+		echo "gh already installed: $$(gh --version | head -1)"; \
+	fi
+
+gh-auth: gh-install ## Authenticate GitHub CLI
+	$(info Authenticate GitHub CLI)
+	@if gh auth status >/dev/null 2>&1; then \
+		gh auth status; \
+	else \
+		gh auth login; \
 	fi
 
 # ==============================================================================

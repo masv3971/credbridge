@@ -21,6 +21,7 @@ func newExampleOP(ctx context.Context, signer pki.Signer, scopes map[string]cred
 		Issuer:                  exampleIssuer,
 		AuthorizationEndpoint:   exampleIssuer + "/authorize",
 		TokenEndpoint:           exampleIssuer + "/token",
+		ClientValidator:         allowAnyClient,
 		UserInfoEndpoint:        exampleIssuer + "/userinfo",
 		JWKSURI:                 exampleIssuer + "/jwks.json",
 		Signer:                  signer,

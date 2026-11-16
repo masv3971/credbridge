@@ -1,9 +1,12 @@
 package credbridge_test
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/SUNET/vc/pkg/openid4vp"
+	"github.com/SUNET/vc/pkg/pki"
 	"github.com/masv3971/credbridge"
 	"github.com/masv3971/credbridge/internal/testsigner"
 	"github.com/stretchr/testify/assert"
@@ -38,6 +41,7 @@ func TestOP_DataMinimisation(t *testing.T) {
 		Issuer:                "https://op.example.org",
 		AuthorizationEndpoint: "https://op.example.org/authorize",
 		TokenEndpoint:         "https://op.example.org/token",
+		ClientValidator:       allowAnyClient,
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -159,6 +163,113 @@ func TestOP_RPQueryIDMustBeDCQLConforming(t *testing.T) {
 	assert.ErrorIs(t, err, credbridge.ErrOPInvalidRequest)
 }
 
+func allowAnyClient(context.Context, string, string) error { return nil }
+
+// flakySigner fails its first Sign call, then delegates.
+type flakySigner struct {
+	pki.Signer
+	failed bool
+}
+
+func (s *flakySigner) Sign(ctx context.Context, data []byte) ([]byte, error) {
+	if !s.failed {
+		s.failed = true
+		return nil, errors.New("transient signer failure")
+	}
+	return s.Signer.Sign(ctx, data)
+}
+
+// A signer failure must not burn the session: the retry succeeds, and a
+// successful issuance still consumes it.
+func TestOP_IssueIDTokenRetryableAfterSignerFailure(t *testing.T) {
+	ctx := t.Context()
+	inner := testsigner.MustNew()
+	// #nosec G101 -- test fixture; PairwiseSalt is not a credential.
+	op, err := credbridge.NewOP(ctx, credbridge.OPConfig{
+		Issuer:                "https://op.example.org",
+		AuthorizationEndpoint: "https://op.example.org/authorize",
+		TokenEndpoint:         "https://op.example.org/token",
+		ClientValidator:       allowAnyClient,
+		Signer:                &flakySigner{Signer: inner},
+		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
+			"ehic": {
+				Format:       openid4vp.FormatSDJWTVC,
+				Type:         []string{"urn:eu.europa.ec.eudi:ehic:1"},
+				SubjectClaim: []string{"ehic_number"},
+			},
+		},
+		PairwiseSalt: []byte("test-salt"),
+	})
+	require.NoError(t, err, "NewOP")
+	defer op.Close()
+
+	opSession, err := op.StartAuthorization(ctx, credbridge.OPAuthorizationRequest{
+		ClientID: "rp", RedirectURI: "https://rp.example.org/cb", Nonce: "n", Scopes: []string{"ehic"},
+	})
+	require.NoError(t, err, "StartAuthorization")
+	token := testsigner.MustIssueJWT(inner, map[string]any{
+		"vct":         "urn:eu.europa.ec.eudi:ehic:1",
+		"ehic_number": "1234567890",
+	})
+	result, err := op.HandleWalletResponse(ctx, opSession, &openid4vp.VPResponse{
+		VPToken: map[string][]string{"ehic": {token}},
+		State:   opSession.State,
+	}, nil)
+	require.NoError(t, err, "HandleWalletResponse")
+
+	_, err = op.IssueIDToken(ctx, opSession, result, credbridge.OPTokenOptions{})
+	require.Error(t, err, "first issuance hits the signer failure")
+
+	_, err = op.IssueIDToken(ctx, opSession, result, credbridge.OPTokenOptions{})
+	require.NoError(t, err, "retry after failure")
+
+	_, err = op.IssueIDToken(ctx, opSession, result, credbridge.OPTokenOptions{})
+	assert.ErrorIs(t, err, credbridge.ErrOPAccessDenied, "session is single-use after success")
+}
+
+// A client/redirect_uri pair the validator rejects must not start a
+// session, and a missing validator must fail construction.
+func TestOP_ClientValidatorEnforced(t *testing.T) {
+	ctx := t.Context()
+	// #nosec G101 -- test fixture; PairwiseSalt is not a credential.
+	cfg := credbridge.OPConfig{
+		Issuer:                "https://op.example.org",
+		AuthorizationEndpoint: "https://op.example.org/authorize",
+		TokenEndpoint:         "https://op.example.org/token",
+		Signer:                testsigner.MustNew(),
+		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
+			"ehic": {
+				Format:       openid4vp.FormatSDJWTVC,
+				Type:         []string{"urn:eu.europa.ec.eudi:ehic:1"},
+				SubjectClaim: []string{"ehic_number"},
+			},
+		},
+		PairwiseSalt: []byte("test-salt"),
+	}
+	_, err := credbridge.NewOP(ctx, cfg)
+	require.Error(t, err, "missing ClientValidator")
+
+	cfg.ClientValidator = func(_ context.Context, clientID, redirectURI string) error {
+		if clientID == "rp" && redirectURI == "https://rp.example.org/cb" {
+			return nil
+		}
+		return errors.New("not registered")
+	}
+	op, err := credbridge.NewOP(ctx, cfg)
+	require.NoError(t, err, "NewOP")
+	defer op.Close()
+
+	_, err = op.StartAuthorization(ctx, credbridge.OPAuthorizationRequest{
+		ClientID: "rp", RedirectURI: "https://rp.example.org/cb", Scopes: []string{"ehic"},
+	})
+	assert.NoError(t, err, "registered pair")
+
+	_, err = op.StartAuthorization(ctx, credbridge.OPAuthorizationRequest{
+		ClientID: "rp", RedirectURI: "https://evil.example/cb", Scopes: []string{"ehic"},
+	})
+	assert.ErrorIs(t, err, credbridge.ErrOPInvalidRequest, "unregistered redirect_uri")
+}
+
 func mustOP(t *testing.T) *credbridge.OP {
 	t.Helper()
 	// #nosec G101 -- test fixture; PairwiseSalt is not a credential.
@@ -166,6 +277,7 @@ func mustOP(t *testing.T) *credbridge.OP {
 		Issuer:                "https://op.example.org",
 		AuthorizationEndpoint: "https://op.example.org/authorize",
 		TokenEndpoint:         "https://op.example.org/token",
+		ClientValidator:       allowAnyClient,
 		Signer:                testsigner.MustNew(),
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
 			"ehic": {
@@ -187,6 +299,7 @@ func mustDCQLOP(t *testing.T) *credbridge.OP {
 		Issuer:                "https://op.example.org",
 		AuthorizationEndpoint: "https://op.example.org/authorize",
 		TokenEndpoint:         "https://op.example.org/token",
+		ClientValidator:       allowAnyClient,
 		Signer:                testsigner.MustNew(),
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{

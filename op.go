@@ -64,6 +64,13 @@ type OPConfig struct {
 	// and the DCQL-based request mode (Section 4.1.2).
 	DCQLQuerySupported bool
 
+	// ClientValidator is REQUIRED. StartAuthorization calls it with the
+	// request's client_id and redirect_uri before creating a session; a
+	// non-nil error rejects the request with ErrOPInvalidRequest. It must
+	// look up the client's registration and require an exact match of
+	// redirectURI against a registered value.
+	ClientValidator func(ctx context.Context, clientID, redirectURI string) error
+
 	// PairwiseSalt is used as HMAC key when deriving pairwise "sub"
 	// values (Section 5.5 → OIDC Core §8.1). It is REQUIRED when
 	// SubjectType is pairwise (the default) and ignored when SubjectType
@@ -188,6 +195,9 @@ func (c OPConfig) validate() error {
 	if c.Signer == nil {
 		return errors.New("credbridge/op: OPConfig.Signer is required")
 	}
+	if c.ClientValidator == nil {
+		return errors.New("credbridge/op: OPConfig.ClientValidator is required")
+	}
 	if c.WalletProtocol != "" && c.WalletProtocol != OPWalletProtocolOpenID4VP {
 		return fmt.Errorf("credbridge/op: unsupported WalletProtocol %q (only %q is implemented)", c.WalletProtocol, OPWalletProtocolOpenID4VP)
 	}
@@ -227,6 +237,10 @@ func (c OPConfig) validate() error {
 // cannot publish metadata that later produces a query whose type check
 // is skipped.
 func validateCredentialTypeConfig(scope string, cfg OPCredentialTypeConfig) error {
+	// deriveSub fails for every issuance without a subject claim path.
+	if len(cfg.SubjectClaim) == 0 {
+		return fmt.Errorf("credbridge/op: scope %q: SubjectClaim is required", scope)
+	}
 	switch cfg.Format {
 	case openid4vp.FormatSDJWTVC:
 		// SD-JWT VC metadata carries exactly one type value, the VCT.

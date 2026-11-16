@@ -43,6 +43,9 @@ func (o *OP) StartAuthorization(ctx context.Context, req OPAuthorizationRequest)
 	if req.RedirectURI == "" {
 		return nil, fmt.Errorf("%w: missing redirect_uri", ErrOPInvalidRequest)
 	}
+	if err := o.cfg.ClientValidator(ctx, req.ClientID, req.RedirectURI); err != nil {
+		return nil, fmt.Errorf("%w: client validation failed: %v", ErrOPInvalidRequest, err)
+	}
 	if req.ResponseType != "" && req.ResponseType != "code" {
 		return nil, fmt.Errorf("%w: response_type must be \"code\"", ErrOPInvalidRequest)
 	}

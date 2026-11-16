@@ -182,6 +182,7 @@ func TestConfigValidation(t *testing.T) {
 		Issuer:                "https://op",
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
+		ClientValidator:       allowAnyClient,
 		Signer:                testsigner.MustNew(),
 		PairwiseSalt:          []byte("salt"),
 	}
@@ -190,6 +191,12 @@ func TestConfigValidation(t *testing.T) {
 
 	base.CredentialPresentations = map[string]credbridge.OPCredentialTypeConfig{
 		"ehic": {Format: openid4vp.FormatSDJWTVC, Type: []string{"urn:eu.europa.ec.eudi:ehic:1"}},
+	}
+	_, err = credbridge.NewOP(context.Background(), base)
+	assert.Error(t, err, "missing SubjectClaim")
+
+	base.CredentialPresentations = map[string]credbridge.OPCredentialTypeConfig{
+		"ehic": {Format: openid4vp.FormatSDJWTVC, Type: []string{"urn:eu.europa.ec.eudi:ehic:1"}, SubjectClaim: []string{"ehic_number"}},
 	}
 	op, err := credbridge.NewOP(context.Background(), base)
 	require.NoError(t, err, "NewOP")
@@ -205,6 +212,7 @@ func TestOP_ClaimSetsMatchAndFilter(t *testing.T) {
 		Issuer:                "https://op",
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
+		ClientValidator:       allowAnyClient,
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -283,6 +291,7 @@ func TestOP_NestedClaimPathFilter(t *testing.T) {
 		Issuer:                "https://op",
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
+		ClientValidator:       allowAnyClient,
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -338,6 +347,49 @@ func TestOP_NestedClaimPathFilter(t *testing.T) {
 	assert.Error(t, err, "value mismatch must reject")
 }
 
+// §5.1.2: a W3C credential entry keeps the credential's full type array,
+// including types beyond those the RP requested.
+func TestOP_W3CEntryPreservesPresentedTypes(t *testing.T) {
+	sig := testsigner.MustNew()
+	// #nosec G101 -- test fixture; PairwiseSalt is not a credential.
+	op, err := credbridge.NewOP(t.Context(), credbridge.OPConfig{
+		Issuer:                "https://op",
+		AuthorizationEndpoint: "https://op/authorize",
+		TokenEndpoint:         "https://op/token",
+		ClientValidator:       allowAnyClient,
+		Signer:                sig,
+		DCQLQuerySupported:    true,
+		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
+			"degree": {Format: openid4vp.FormatJwtVCJson, Type: []string{"VerifiableCredential", "UniversityDegreeCredential"}, SubjectClaim: []string{"degree"}},
+		},
+		PairwiseSalt: []byte("salt"),
+	})
+	require.NoError(t, err, "NewOP")
+	defer op.Close()
+
+	opSession, err := op.StartAuthorization(t.Context(), credbridge.OPAuthorizationRequest{
+		ClientID: "rp", RedirectURI: "https://rp.example.org/cb", Nonce: "n",
+		Scopes: []string{"degree"},
+		DCQLQuery: &openid4vp.DCQL{Credentials: []openid4vp.CredentialQuery{{
+			ID: "degree", Format: openid4vp.FormatJwtVCJson,
+			Meta: openid4vp.MetaQuery{TypeValues: [][]string{{"VerifiableCredential", "UniversityDegreeCredential"}}},
+		}}},
+	})
+	require.NoError(t, err, "StartAuthorization")
+	token := testsigner.MustIssueJWT(sig, map[string]any{
+		"type":   []any{"VerifiableCredential", "UniversityDegreeCredential", "ExtraCredential"},
+		"degree": "BSc",
+	})
+	result, err := op.HandleWalletResponse(t.Context(), opSession, &openid4vp.VPResponse{
+		VPToken: map[string][]string{"degree": {token}},
+		State:   opSession.State,
+	}, nil)
+	require.NoError(t, err, "HandleWalletResponse")
+	assert.Equal(t,
+		[]string{"VerifiableCredential", "UniversityDegreeCredential", "ExtraCredential"},
+		result.Entries["degree"][0].Type)
+}
+
 // A caller-provided OPStorage must satisfy the same Put/Consume
 // contract as the built-in default.
 func TestOP_CustomStorage(t *testing.T) {
@@ -346,6 +398,7 @@ func TestOP_CustomStorage(t *testing.T) {
 		Issuer:                "https://op",
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
+		ClientValidator:       allowAnyClient,
 		Signer:                testsigner.MustNew(),
 		Storage:               storage,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -455,6 +508,23 @@ func TestCredentialEntry_AdditionalFieldsRoundTrip(t *testing.T) {
 	assert.Error(t, err, "Verification collision must fail marshal")
 }
 
+// §5.1.2: an empty claims or namespaces object must still be emitted and
+// survive a round trip, otherwise the exactly-one-of rule is violated.
+func TestCredentialEntry_EmptyClaimsObjectRoundTrip(t *testing.T) {
+	data, err := json.Marshal(credbridge.CredentialEntry{Type: []string{"vc"}, Claims: map[string]any{}})
+	require.NoError(t, err, "Marshal claims")
+	assert.Contains(t, string(data), `"claims":{}`)
+	var decoded credbridge.CredentialEntry
+	require.NoError(t, json.Unmarshal(data, &decoded), "Unmarshal")
+	assert.NotNil(t, decoded.Claims)
+	assert.Nil(t, decoded.Namespaces)
+
+	data, err = json.Marshal(credbridge.CredentialEntry{Type: []string{"vc"}, Namespaces: map[string]map[string]any{}})
+	require.NoError(t, err, "Marshal namespaces")
+	assert.Contains(t, string(data), `"namespaces":{}`)
+	assert.NotContains(t, string(data), `"claims"`)
+}
+
 // MatchValue's numeric branches: integer/float across signed/unsigned
 // and float32/float64 must all normalise consistently.
 func TestMatchValue_NumericBranches(t *testing.T) {
@@ -485,6 +555,7 @@ func TestOP_SubDerivation_Primary(t *testing.T) {
 		Issuer:                "https://op",
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
+		ClientValidator:       allowAnyClient,
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -529,6 +600,7 @@ func TestOP_DCQLMetaTypeSwitch(t *testing.T) {
 		Issuer:                "https://op",
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
+		ClientValidator:       allowAnyClient,
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -543,6 +615,7 @@ func TestOP_DCQLMetaTypeSwitch(t *testing.T) {
 		Issuer:                "https://op",
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
+		ClientValidator:       allowAnyClient,
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{

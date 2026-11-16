@@ -52,6 +52,10 @@ op, err := credbridge.NewOP(ctx, credbridge.OPConfig{
     AuthorizationEndpoint: "https://op.example.org/authorize",
     TokenEndpoint:         "https://op.example.org/token",
     Signer:                mySigner, // pki.Signer
+    ClientValidator: func(ctx context.Context, clientID, redirectURI string) error {
+        // look up clientID in your registry; require an exact redirectURI match
+        return nil
+    },
     CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
         "ehic": {
             Format:       openid4vp.FormatSDJWTVC,
@@ -87,6 +91,9 @@ url, err := rp.BuildAuthorizationURL(ctx, credbridge.RPAuthorizationRequestOptio
 })
 
 claims, err := rp.ParseIDToken(ctx, idToken, freshNonce)
+if err != nil {
+    // invalid ID Token: reject the login; claims is nil
+}
 if err := claims.EvaluatePresentedCredentialSets(); err != nil {
     // §4.2 check failed (crit unsatisfied, essential claim absent, ...)
 }
