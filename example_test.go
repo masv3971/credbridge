@@ -220,7 +220,7 @@ func ExampleRP_scopeFlow() {
 		fmt.Println("evaluate:", err)
 		return
 	}
-	entry, ok := claims.FirstEntry("", "ehic")
+	entry, ok := claims.FirstEntry("ehic")
 	if !ok {
 		fmt.Println("no ehic")
 		return
@@ -237,8 +237,8 @@ func ExampleRP_scopeFlow() {
 
 // ExampleRP_dcqlFlow drives a DCQL-based request with a credential_sets
 // alternation ("PID OR EHIC") and shows how the RP evaluates the
-// returned claim, including the credential_set_id echo defined in RFC
-// §5.1.1.
+// returned claim: the single response Credential Set holds only the
+// matched AND-group, keyed by Credential Query id (RFC §5.1.1).
 func ExampleRP_dcqlFlow() {
 	ctx := context.Background()
 	signer := testsigner.MustNew()
@@ -277,12 +277,11 @@ func ExampleRP_dcqlFlow() {
 		},
 	}
 	opSession, err := op.StartAuthorization(ctx, credbridge.OPAuthorizationRequest{
-		ClientID:         "https://rp.example.org",
-		RedirectURI:      "https://rp.example.org/cb",
-		Nonce:            "n-0S6_WzA2Mj",
-		Scopes:           []string{"openid", "pid", "ehic"},
-		DCQLQuery:        dcql,
-		CredentialSetIDs: []string{"pid_or_ehic"},
+		ClientID:    "https://rp.example.org",
+		RedirectURI: "https://rp.example.org/cb",
+		Nonce:       "n-0S6_WzA2Mj",
+		Scopes:      []string{"openid", "pid", "ehic"},
+		DCQLQuery:   dcql,
 	})
 	if err != nil {
 		fmt.Println("start:", err)
@@ -324,12 +323,12 @@ func ExampleRP_dcqlFlow() {
 		return
 	}
 	set := claims.PresentedCredentialSets[0]
-	fmt.Println("credential_set_id:", set.CredentialSetID)
+	fmt.Println("sets:", len(claims.PresentedCredentialSets))
 	fmt.Println("has ehic:", len(set.Credentials["ehic"]) == 1)
 	fmt.Println("has pid:", len(set.Credentials["pid"]) == 1)
 
 	// Output:
-	// credential_set_id: pid_or_ehic
+	// sets: 1
 	// has ehic: true
 	// has pid: false
 }

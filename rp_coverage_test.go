@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SUNET/vc/pkg/openid4vp"
 	"github.com/masv3971/credbridge"
 	"github.com/masv3971/credbridge/internal/testsigner"
 	"github.com/stretchr/testify/assert"
@@ -43,7 +42,6 @@ func TestRP_ParseIDToken_Valid(t *testing.T) {
 		"nonce": "n",
 		"presented_credential_sets": []any{
 			map[string]any{
-				"credential_set_id": "set1",
 				"credentials": map[string]any{
 					"ehic": []any{
 						map[string]any{
@@ -60,7 +58,7 @@ func TestRP_ParseIDToken_Valid(t *testing.T) {
 	assert.Equal(t, "https://op.example.org", claims.Issuer)
 	assert.Equal(t, "other", claims.Audience)
 	assert.Equal(t, []string{"other", "rp"}, claims.Audiences)
-	entry, ok := claims.FirstEntry("set1", "ehic")
+	entry, ok := claims.FirstEntry("ehic")
 	require.True(t, ok, "ehic entry missing")
 	assert.Equal(t, "1234567890", entry.Claims["ehic_number"])
 }
@@ -134,7 +132,6 @@ func TestRP_EvaluatePresentedCredentialSets(t *testing.T) {
 	assert.ErrorIs(t, empty.EvaluatePresentedCredentialSets(), credbridge.ErrRPPresentedSetsMissing)
 
 	valid := &credbridge.RPClaims{PresentedCredentialSets: credbridge.PresentedCredentialSets{{
-		CredentialSetID: "set1",
 		Credentials: map[string][]credbridge.CredentialEntry{
 			"ehic": {{Type: []string{"vc"}, Claims: map[string]any{"a": "b"}}},
 		},
@@ -189,16 +186,6 @@ func TestRP_EvaluatePresentedCredentialSets(t *testing.T) {
 	}}}
 	assert.ErrorIs(t, noTrust.EvaluatePresentedCredentialSets(), credbridge.ErrRPUnexpectedResponseShape)
 
-	// Duplicate non-empty credential_set_id values are ambiguous.
-	entry := map[string][]credbridge.CredentialEntry{
-		"ehic": {{Type: []string{"vc"}, Claims: map[string]any{"a": "b"}}},
-	}
-	dupIDs := &credbridge.RPClaims{PresentedCredentialSets: credbridge.PresentedCredentialSets{
-		{CredentialSetID: "s", Credentials: entry},
-		{CredentialSetID: "s", Credentials: entry},
-	}}
-	assert.ErrorIs(t, dupIDs.EvaluatePresentedCredentialSets(), credbridge.ErrRPUnexpectedResponseShape)
-
 	// Unsatisfiable crit must surface.
 	badCrit := &credbridge.RPClaims{PresentedCredentialSets: credbridge.PresentedCredentialSets{{
 		Credentials: map[string][]credbridge.CredentialEntry{
@@ -215,30 +202,28 @@ func TestRP_EvaluatePresentedCredentialSets(t *testing.T) {
 	assert.ErrorIs(t, badCrit.EvaluatePresentedCredentialSets(), credbridge.ErrCritUnknownMember)
 }
 
-// Entries/FirstEntry cover the setKey wildcard, a specific-set filter,
-// and the no-match path.
+// Entries/FirstEntry cover lookups across sets and the no-match path.
 func TestRP_EntriesAndFirstEntry(t *testing.T) {
-	assert.Nil(t, (*credbridge.RPClaims)(nil).Entries("", "ehic"))
-	_, ok := (*credbridge.RPClaims)(nil).FirstEntry("", "ehic")
+	assert.Nil(t, (*credbridge.RPClaims)(nil).Entries("ehic"))
+	_, ok := (*credbridge.RPClaims)(nil).FirstEntry("ehic")
 	assert.False(t, ok)
 
 	claims := &credbridge.RPClaims{PresentedCredentialSets: credbridge.PresentedCredentialSets{
-		{CredentialSetID: "a", Credentials: map[string][]credbridge.CredentialEntry{
+		{Credentials: map[string][]credbridge.CredentialEntry{
 			"ehic": {{Type: []string{"vc"}, Claims: map[string]any{"n": "1"}}},
 		}},
-		{CredentialSetID: "b", Credentials: map[string][]credbridge.CredentialEntry{
+		{Credentials: map[string][]credbridge.CredentialEntry{
 			"ehic": {{Type: []string{"vc"}, Claims: map[string]any{"n": "2"}}},
 		}},
 	}}
-	assert.Len(t, claims.Entries("", "ehic"), 2, "wildcard setKey matches both sets")
-	assert.Len(t, claims.Entries("a", "ehic"), 1, "specific setKey filters")
-	assert.Empty(t, claims.Entries("a", "pid"), "unknown credential key")
+	assert.Len(t, claims.Entries("ehic"), 2, "entries from every set")
+	assert.Empty(t, claims.Entries("pid"), "unknown credential key")
 
-	entry, ok := claims.FirstEntry("b", "ehic")
+	entry, ok := claims.FirstEntry("ehic")
 	require.True(t, ok)
-	assert.Equal(t, "2", entry.Claims["n"])
-	_, ok = claims.FirstEntry("c", "ehic")
-	assert.False(t, ok, "no matching set")
+	assert.Equal(t, "1", entry.Claims["n"])
+	_, ok = claims.FirstEntry("pid")
+	assert.False(t, ok, "no matching key")
 }
 
 // BuildAuthorizationURL error and happy paths not exercised elsewhere.
@@ -291,40 +276,6 @@ func TestRP_BuildAuthorizationURL_Paths(t *testing.T) {
 		Scopes: []string{"ehic"}, Nonce: "n",
 	})
 	assert.Error(t, err, "invalid redirect scheme must be rejected")
-
-	// credential_sets without an id each must be rejected before the wire.
-	prime(rp, true)
-	required := false
-	_, err = rp.BuildAuthorizationURL(t.Context(), credbridge.RPAuthorizationRequestOptions{
-		Scopes: []string{"ehic"},
-		Nonce:  "n",
-		DCQLQuery: &openid4vp.DCQL{
-			Credentials: []openid4vp.CredentialQuery{{
-				ID: "ehic", Format: openid4vp.FormatSDJWTVC,
-				Meta: openid4vp.MetaQuery{VCTValues: []string{"urn:eu.europa.ec.eudi:ehic:1"}},
-			}},
-			CredentialSets: []openid4vp.CredentialSetQuery{{Options: [][]string{{"ehic"}}, Required: &required}},
-		},
-	})
-	assert.Error(t, err, "missing credential_sets id must be rejected")
-
-	// Duplicate credential_sets ids must be rejected.
-	_, err = rp.BuildAuthorizationURL(t.Context(), credbridge.RPAuthorizationRequestOptions{
-		Scopes: []string{"ehic"},
-		Nonce:  "n",
-		DCQLQuery: &openid4vp.DCQL{
-			Credentials: []openid4vp.CredentialQuery{{
-				ID: "ehic", Format: openid4vp.FormatSDJWTVC,
-				Meta: openid4vp.MetaQuery{VCTValues: []string{"urn:eu.europa.ec.eudi:ehic:1"}},
-			}},
-			CredentialSets: []openid4vp.CredentialSetQuery{
-				{Options: [][]string{{"ehic"}}, Required: &required},
-				{Options: [][]string{{"ehic"}}, Required: &required},
-			},
-		},
-		CredentialSetIDs: []string{"dup", "dup"},
-	})
-	assert.Error(t, err, "duplicate credential_sets ids must be rejected")
 
 	// Discovery failure propagates.
 	failRP, err := credbridge.NewRP(credbridge.RPConfig{

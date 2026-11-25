@@ -99,24 +99,28 @@ if err != nil {
 if err := claims.EvaluatePresentedCredentialSets(); err != nil {
     // §4.2 check failed (crit unsatisfied, essential claim absent, ...)
 }
-entry, ok := claims.FirstEntry("", "ehic")
+entry, ok := claims.FirstEntry("ehic")
 ```
 
 See [`example_test.go`](example_test.go) for runnable end-to-end
 examples covering scope-based and DCQL-based flows, and see
 [`doc.go`](doc.go) for the full API tour.
 
-## Credential Set ids
+## Credential sets
 
-RFC §4.1.2 makes the `id` on a DCQL `credential_sets` entry REQUIRED,
-but the upstream `openid4vp.CredentialSetQuery` type does not model
-it. `credbridge` bridges that gap: callers pass the ids alongside the
-DCQL query via `OPAuthorizationRequest.CredentialSetIDs` and
-`RPAuthorizationRequestOptions.CredentialSetIDs`. On the RP side the
-ids are spliced into the marshalled DCQL query so the wire form
-matches the RFC; on the OP side the ids are validated for uniqueness
-and DCQL charset conformance and later echoed back as
-`credential_set_id` on each satisfied Credential Set.
+The DCQL `credential_sets` member is passed through unchanged; the
+profile adds no members to its entries. A Credential Query `id` may be
+referenced by only one `credential_sets` entry (repeats among the
+options of that one entry are fine), otherwise the OP answers
+`invalid_request`. The OP returns exactly one Credential Set holding the
+matched entries of every satisfied `credential_sets` entry, keyed by
+Credential Query `id`; the RP tells which group matched from the keys
+present.
+
+## Discovery
+
+`RP.Discover` requires an `https` issuer and refuses https-to-http
+redirects. Set `RPConfig.AllowInsecureHTTP` only for local tests.
 
 ## Build, test, lint
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -24,13 +25,6 @@ type OPAuthorizationRequest struct {
 	// DCQLQuery is populated when the request contained a "dcql_query"
 	// member inside the OIDC "claims" parameter (Section 4.1.2).
 	DCQLQuery *openid4vp.DCQL
-
-	// CredentialSetIDs carries the REQUIRED Credential Set "id" values
-	// that RFC §4.1.2 layers on top of OpenID4VP's Credential Set Query.
-	// Slot i corresponds to DCQLQuery.CredentialSets[i]; every entry needs
-	// a non-empty id using the DCQL id charset, unique within the request.
-	// Extra slots past len(DCQLQuery.CredentialSets) are ignored.
-	CredentialSetIDs []string
 }
 
 // StartAuthorization validates req against the RFC and initialises a
@@ -75,7 +69,7 @@ func (o *OP) StartAuthorization(ctx context.Context, req OPAuthorizationRequest)
 		}
 	}
 
-	resolvedDCQL, err := o.buildResolvedDCQL(supported, req.DCQLQuery, req.CredentialSetIDs)
+	resolvedDCQL, err := o.buildResolvedDCQL(supported, req.DCQLQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +193,13 @@ func (o *OP) validateRPQueryProfile(q *openid4vp.DCQL, scopes []string) error {
 // typeKey builds the format|type string used to index the OP's
 // credential_presentations_supported mapping (§5.2).
 func typeKey(format string, types []string) string {
-	return format + "|" + strings.Join(types, ",")
+	// JSON encoding keeps element boundaries: ["a,b"] and ["a","b"] differ.
+	encoded, err := json.Marshal(types)
+	if err != nil {
+		// Unreachable for []string.
+		encoded = []byte(strings.Join(types, "\x00"))
+	}
+	return format + "|" + string(encoded)
 }
 
 // metaTypeKey extracts the format-specific type identifier from cq's

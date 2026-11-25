@@ -66,6 +66,11 @@ type ResolvedCredentialQuery struct {
 	// TrustedAuthorityAllowed reports whether the OP's SSRF allowlist
 	// admitted at least one of the trusted_authorities entries.
 	TrustedAuthorityAllowed bool
+	// SubjectClaim is the scope's configured subject claim path. The wallet
+	// is asked for it in addition to the RP's claims so sub derivation
+	// works under selective disclosure; it is never relayed to the RP
+	// unless the RP requested it.
+	SubjectClaim []string
 	// RequireCryptographicHolderBinding carries the RP's effective
 	// require_cryptographic_holder_binding constraint (OpenID4VP §6.1,
 	// default true) so response validation can enforce holder binding.
@@ -82,10 +87,8 @@ type ResolvedClaim struct {
 	Values []any
 }
 
-// ResolvedCredentialSet mirrors openid4vp.CredentialSetQuery plus the
-// RFC §4.1.2 REQUIRED "id".
+// ResolvedCredentialSet mirrors openid4vp.CredentialSetQuery.
 type ResolvedCredentialSet struct {
-	ID       string
 	Options  [][]string
 	Required bool
 }

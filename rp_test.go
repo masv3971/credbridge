@@ -122,7 +122,7 @@ func TestUserInfoRoundTrip(t *testing.T) {
 	require.NotEmpty(t, expectedSub, "payload sub")
 	claims, err := rp.FetchUserInfoClaims(body, expectedSub)
 	require.NoError(t, err, "FetchUserInfoClaims")
-	entry, ok := claims.FirstEntry("", "ehic")
+	entry, ok := claims.FirstEntry("ehic")
 	require.True(t, ok, "ehic entry missing from UserInfo")
 	assert.Equal(t, "1234567890", entry.Claims["ehic_number"])
 }

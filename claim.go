@@ -12,10 +12,6 @@ const PresentedCredentialSetsClaim = "presented_credential_sets"
 // PresentedCredentialSet is one entry in the top-level
 // "presented_credential_sets" array (Section 5.1.1).
 type PresentedCredentialSet struct {
-	// CredentialSetID echoes the RP-supplied DCQL Credential Set "id" when
-	// the request used the DCQL-based mode; empty in scope-based mode.
-	CredentialSetID string `json:"credential_set_id,omitempty"`
-
 	// Credentials is keyed by credential type scope value (scope-based
 	// mode) or DCQL Credential Query "id" (DCQL-based mode). Each value is
 	// one or more CredentialEntry objects, one per credential the wallet
@@ -201,6 +197,13 @@ func (e *CredentialEntry) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
+	}
+	// Typed decoding cannot tell an explicit null from an omitted member, but
+	// §5.1.2 counts a present member.
+	for _, k := range []string{"claims", "namespaces"} {
+		if v, ok := raw[k]; ok && string(v) == "null" {
+			return fmt.Errorf("credbridge: %q must be a JSON object, not null", k)
+		}
 	}
 	var extras map[string]any
 	for k, v := range raw {

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync"
 	"testing"
 
@@ -105,9 +104,9 @@ func stubIssuerURL(t *testing.T, override string) string {
 	return "https://example.invalid"
 }
 
-// §4.1.2 wire form: RP-supplied credential_sets ids are spliced into
-// the marshalled DCQL query so the wallet sees `id`.
-func TestRP_BuildAuthorizationURL_DCQLSplicesSetIDs(t *testing.T) {
+// §4.1.2 wire form: the dcql_query, including credential_sets, is sent
+// unchanged in the claims parameter.
+func TestRP_BuildAuthorizationURL_DCQLWireForm(t *testing.T) {
 	rp, err := credbridge.NewRP(credbridge.RPConfig{
 		IssuerURL: "https://op.example.org", ClientID: "rp", RedirectURI: "https://rp.example.org/cb",
 	})
@@ -134,15 +133,14 @@ func TestRP_BuildAuthorizationURL_DCQLSplicesSetIDs(t *testing.T) {
 				{Options: [][]string{{"ehic"}}, Required: &required},
 			},
 		},
-		CredentialSetIDs: []string{"ehic_only"},
 	})
 	require.NoError(t, err, "BuildAuthorizationURL")
 	parsed, err := url.Parse(u)
 	require.NoError(t, err, "parse url")
 	claims := parsed.Query().Get("claims")
 	require.NotEmpty(t, claims, "claims parameter missing")
-	assert.True(t, strings.Contains(claims, `"id":"ehic_only"`),
-		"credential_sets id not spliced into claims payload: %s", claims)
+	assert.Contains(t, claims, `"credential_sets"`)
+	assert.NotContains(t, claims, `"id":"ehic_only"`, "no credential set id is sent")
 
 	// DCQL-not-supported path: RP must refuse when discovery says no.
 	rp.PrimeDiscovery(&credbridge.RPDiscoveryMetadata{
@@ -377,8 +375,11 @@ func TestOP_W3CEntryPreservesPresentedTypes(t *testing.T) {
 	})
 	require.NoError(t, err, "StartAuthorization")
 	token := testsigner.MustIssueJWT(sig, map[string]any{
-		"type":   []any{"VerifiableCredential", "UniversityDegreeCredential", "ExtraCredential"},
-		"degree": "BSc",
+		"iss": "https://issuer.example",
+		"vc": map[string]any{
+			"type":              []any{"VerifiableCredential", "UniversityDegreeCredential", "ExtraCredential"},
+			"credentialSubject": map[string]any{"degree": "BSc"},
+		},
 	})
 	result, err := op.HandleWalletResponse(t.Context(), opSession, &openid4vp.VPResponse{
 		VPToken: map[string][]string{"degree": {token}},

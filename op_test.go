@@ -105,9 +105,9 @@ func TestOP_ReservedPrefixRejected(t *testing.T) {
 	assert.ErrorIs(t, err, credbridge.ErrOPBridgePrefixReserved)
 }
 
-// §4.1.2: credential_sets MUST carry an id; missing/blank/non-conforming
-// or duplicate ids MUST cause invalid_request.
-func TestOP_CredentialSetsRequireID(t *testing.T) {
+// §4.1.2: a Credential Query id MUST NOT be referenced by more than one
+// credential_sets entry; repeats among the options of one entry are fine.
+func TestOP_CredentialSetsQueryInOneSetOnly(t *testing.T) {
 	ctx := t.Context()
 	op := mustDCQLOP(t)
 	defer op.Close()
@@ -120,7 +120,7 @@ func TestOP_CredentialSetsRequireID(t *testing.T) {
 			Meta:   openid4vp.MetaQuery{VCTValues: []string{"urn:eu.europa.ec.eudi:ehic:1"}},
 		}},
 		CredentialSets: []openid4vp.CredentialSetQuery{
-			{Options: [][]string{{"ehic"}}, Required: &required},
+			{Options: [][]string{{"ehic"}, {"ehic"}}, Required: &required},
 		},
 	}
 	req := credbridge.OPAuthorizationRequest{
@@ -128,11 +128,7 @@ func TestOP_CredentialSetsRequireID(t *testing.T) {
 		Scopes: []string{"ehic"}, DCQLQuery: base,
 	}
 	_, err := op.StartAuthorization(ctx, req)
-	assert.ErrorIs(t, err, credbridge.ErrOPInvalidRequest, "missing credential_sets id")
-
-	req.CredentialSetIDs = []string{"bad:id"}
-	_, err = op.StartAuthorization(ctx, req)
-	assert.ErrorIs(t, err, credbridge.ErrOPInvalidRequest, "id violating DCQL charset")
+	assert.NoError(t, err, "repeat within one credential_sets entry")
 
 	twoSets := *base
 	twoSets.CredentialSets = []openid4vp.CredentialSetQuery{
@@ -140,9 +136,8 @@ func TestOP_CredentialSetsRequireID(t *testing.T) {
 		{Options: [][]string{{"ehic"}}, Required: &required},
 	}
 	req.DCQLQuery = &twoSets
-	req.CredentialSetIDs = []string{"a", "a"}
 	_, err = op.StartAuthorization(ctx, req)
-	assert.ErrorIs(t, err, credbridge.ErrOPInvalidRequest, "duplicate credential_set ids")
+	assert.ErrorIs(t, err, credbridge.ErrOPInvalidRequest, "query referenced by two credential_sets entries")
 }
 
 // §4.1.2: RP-supplied credential_query ids must conform to the DCQL charset.

@@ -13,7 +13,6 @@ import "fmt"
 //     via [EvaluateCrit].
 //  4. Unknown top-level members of a Credential Entry that are not
 //     listed in crit are silently ignored (§4.2 item 4).
-//  5. Non-empty credential_set_id values are unique across sets.
 //
 // understoodVerificationMembers is the set of additional Verification
 // members the RP claims to understand. Standard members
@@ -24,16 +23,9 @@ func (rc *RPClaims) EvaluatePresentedCredentialSets(understoodVerificationMember
 	if rc == nil || len(rc.PresentedCredentialSets) == 0 {
 		return ErrRPPresentedSetsMissing
 	}
-	seenSetIDs := make(map[string]struct{}, len(rc.PresentedCredentialSets))
 	for si, set := range rc.PresentedCredentialSets {
 		if len(set.Credentials) == 0 {
 			return fmt.Errorf("%w: credential set %d has no credentials", ErrRPUnexpectedResponseShape, si)
-		}
-		if set.CredentialSetID != "" {
-			if _, dup := seenSetIDs[set.CredentialSetID]; dup {
-				return fmt.Errorf("%w: duplicate credential_set_id %q", ErrRPUnexpectedResponseShape, set.CredentialSetID)
-			}
-			seenSetIDs[set.CredentialSetID] = struct{}{}
 		}
 		primaryCount := 0
 		for key, entries := range set.Credentials {
@@ -78,28 +70,23 @@ func validateEntryStructure(e CredentialEntry) error {
 	return nil
 }
 
-// Entries returns all Credential Entries whose enclosing set has the
-// given credential set id and whose key inside Credentials equals
-// credentialKey. Pass "" for setKey to match any set.
-func (rc *RPClaims) Entries(setKey, credentialKey string) []CredentialEntry {
+// Entries returns all Credential Entries whose key inside Credentials
+// equals credentialKey, across every Credential Set.
+func (rc *RPClaims) Entries(credentialKey string) []CredentialEntry {
 	if rc == nil {
 		return nil
 	}
 	var out []CredentialEntry
 	for _, set := range rc.PresentedCredentialSets {
-		if setKey != "" && set.CredentialSetID != setKey {
-			continue
-		}
 		out = append(out, set.Credentials[credentialKey]...)
 	}
 	return out
 }
 
-// FirstEntry returns the first Credential Entry matching setKey and
-// credentialKey. The bool is false when no match exists. See Entries
-// for the setKey wildcard rule.
-func (rc *RPClaims) FirstEntry(setKey, credentialKey string) (CredentialEntry, bool) {
-	entries := rc.Entries(setKey, credentialKey)
+// FirstEntry returns the first Credential Entry for credentialKey. The
+// bool is false when no match exists.
+func (rc *RPClaims) FirstEntry(credentialKey string) (CredentialEntry, bool) {
+	entries := rc.Entries(credentialKey)
 	if len(entries) == 0 {
 		return CredentialEntry{}, false
 	}

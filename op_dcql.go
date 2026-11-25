@@ -28,9 +28,7 @@ func isValidDCQLID(s string) bool {
 
 // buildResolvedDCQL implements the Appendix A scope→DCQL translation
 // and the Appendix A.2 augmentation of an RP-supplied DCQL query.
-// credentialSetIDs supplies the RFC §4.1.2 Credential Set "id" values
-// aligned index-wise with rp.CredentialSets.
-func (o *OP) buildResolvedDCQL(scopes []string, rp *openid4vp.DCQL, credentialSetIDs []string) (ResolvedDCQL, error) {
+func (o *OP) buildResolvedDCQL(scopes []string, rp *openid4vp.DCQL) (ResolvedDCQL, error) {
 	if rp == nil {
 		return o.buildScopeDCQL(scopes)
 	}
@@ -57,16 +55,12 @@ func (o *OP) buildResolvedDCQL(scopes []string, rp *openid4vp.DCQL, credentialSe
 		resolvedDCQL.Credentials = append(resolvedDCQL.Credentials, resolved)
 	}
 	if len(rp.CredentialSets) > 0 {
-		if err := validateCredentialSetIDs(rp.CredentialSets, credentialSetIDs); err != nil {
-			return ResolvedDCQL{}, err
-		}
 		if err := validateCredentialSetOptions(rp.CredentialSets, rp.Credentials); err != nil {
 			return ResolvedDCQL{}, err
 		}
 	}
-	for i, cs := range rp.CredentialSets {
+	for _, cs := range rp.CredentialSets {
 		resolvedDCQL.CredentialSets = append(resolvedDCQL.CredentialSets, ResolvedCredentialSet{
-			ID:       credentialSetIDs[i],
 			Options:  cloneOptions(cs.Options),
 			Required: cs.IsRequired(),
 		})
@@ -92,15 +86,18 @@ func (o *OP) buildResolvedDCQL(scopes []string, rp *openid4vp.DCQL, credentialSe
 }
 
 // validateCredentialSetOptions enforces that every credential_sets
-// option is non-empty and references a credential query id that exists
-// in credentials, so a malformed request is rejected with
-// invalid_request at authorization time rather than surfacing later as
-// an unsatisfied presentation.
+// option is non-empty, references a credential query id that exists in
+// credentials, and that no query is referenced by more than one
+// credential_sets entry (repeats among the options of one entry are fine),
+// so a malformed request is rejected with invalid_request at
+// authorization time rather than surfacing later as an unsatisfied
+// presentation.
 func validateCredentialSetOptions(sets []openid4vp.CredentialSetQuery, credentials []openid4vp.CredentialQuery) error {
 	credIDs := make(map[string]struct{}, len(credentials))
 	for _, cq := range credentials {
 		credIDs[cq.ID] = struct{}{}
 	}
+	owner := make(map[string]int, len(credentials))
 	for i, cs := range sets {
 		if len(cs.Options) == 0 {
 			return fmt.Errorf("%w: credential_sets[%d] has no options", ErrOPInvalidRequest, i)
@@ -113,29 +110,12 @@ func validateCredentialSetOptions(sets []openid4vp.CredentialSetQuery, credentia
 				if _, ok := credIDs[ref]; !ok {
 					return fmt.Errorf("%w: credential_sets[%d] option references unknown credential query id %q", ErrOPInvalidRequest, i, ref)
 				}
+				if prev, taken := owner[ref]; taken && prev != i {
+					return fmt.Errorf("%w: credential query %q is referenced by credential_sets[%d] and credential_sets[%d]", ErrOPInvalidRequest, ref, prev, i)
+				}
+				owner[ref] = i
 			}
 		}
-	}
-	return nil
-}
-
-// validateCredentialSetIDs enforces §4.1.2's REQUIRED "id" on every
-// credential_sets entry: aligned count, non-empty, DCQL charset,
-// unique per response.
-func validateCredentialSetIDs(sets []openid4vp.CredentialSetQuery, ids []string) error {
-	if len(ids) < len(sets) {
-		return fmt.Errorf("%w: credential_sets entries missing id (need %d, got %d)", ErrOPInvalidRequest, len(sets), len(ids))
-	}
-	seen := make(map[string]struct{}, len(sets))
-	for i := range sets {
-		id := ids[i]
-		if !isValidDCQLID(id) {
-			return fmt.Errorf("%w: credential_sets[%d].id %q missing or violates OpenID4VP \u00a76.1 charset", ErrOPInvalidRequest, i, id)
-		}
-		if _, dup := seen[id]; dup {
-			return fmt.Errorf("%w: credential_sets ids must be unique; %q appears twice", ErrOPInvalidRequest, id)
-		}
-		seen[id] = struct{}{}
 	}
 	return nil
 }
@@ -235,6 +215,9 @@ func (o *OP) resolveCredentialQuery(cq openid4vp.CredentialQuery, scope string) 
 			}
 		}
 	}
+	if cfg, ok := o.cfg.CredentialPresentations[scope]; ok {
+		resolvedQuery.SubjectClaim = append([]string(nil), cfg.SubjectClaim...)
+	}
 	kept, allowed, err := o.filterTrustedAuthorities(cq.TrustedAuthorities)
 	if err != nil {
 		return ResolvedCredentialQuery{}, err
@@ -279,6 +262,11 @@ func (o *OP) filterTrustedAuthorities(auths []openid4vp.TrustedAuthority) ([]ope
 // rather than silently coerced to an empty object key that can never
 // match or be relayed.
 func dcqlClaimPath(path []*string) ([]string, error) {
+	// An empty path would select the whole credential and count as satisfied
+	// while relaying nothing.
+	if len(path) == 0 {
+		return nil, fmt.Errorf("%w: DCQL claim path must not be empty", ErrOPInvalidRequest)
+	}
 	out := make([]string, 0, len(path))
 	for _, p := range path {
 		if p == nil {

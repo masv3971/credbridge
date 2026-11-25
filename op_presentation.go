@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/SUNET/vc/pkg/openid4vp"
@@ -86,6 +87,7 @@ func (r ResolvedCredentialQuery) toCredentialQuery() openid4vp.CredentialQuery {
 		})
 	}
 	cq.ClaimSet = cloneOptions(r.ClaimSets)
+	r.addSubjectClaim(&cq)
 	// Forward the RP's effective constraints unchanged: without these the
 	// wallet would never see trusted_authorities and an explicit
 	// require_cryptographic_holder_binding:false would silently revert to
@@ -94,6 +96,34 @@ func (r ResolvedCredentialQuery) toCredentialQuery() openid4vp.CredentialQuery {
 	holderBinding := r.RequireCryptographicHolderBinding
 	cq.RequireCryptographicHolderBinding = &holderBinding
 	return cq
+}
+
+// addSubjectClaim asks the wallet for the subject claim next to the RP's
+// claims, and adds it to every claim_sets option, so a selectively
+// disclosing wallet still reveals the identifier sub derivation needs.
+// Response filtering uses the RP's own claims, so it is not relayed.
+func (r ResolvedCredentialQuery) addSubjectClaim(cq *openid4vp.CredentialQuery) {
+	// Without requested claims the wallet may disclose everything anyway.
+	if len(r.SubjectClaim) == 0 || len(cq.Claims) == 0 {
+		return
+	}
+	if len(cq.ClaimSet) == 0 {
+		for _, cl := range r.Claims {
+			if slices.Equal(cl.Path, r.SubjectClaim) {
+				return
+			}
+		}
+		cq.Claims = append(cq.Claims, openid4vp.ClaimQuery{Path: openid4vp.StringPath(r.SubjectClaim...)})
+		return
+	}
+	id := "bridge_subject"
+	for slices.ContainsFunc(cq.Claims, func(c openid4vp.ClaimQuery) bool { return c.ID == id }) {
+		id += "_"
+	}
+	cq.Claims = append(cq.Claims, openid4vp.ClaimQuery{ID: id, Path: openid4vp.StringPath(r.SubjectClaim...)})
+	for i := range cq.ClaimSet {
+		cq.ClaimSet[i] = append(cq.ClaimSet[i], id)
+	}
 }
 
 // OPPresentationResult is the parsed, verified result of a wallet
@@ -193,6 +223,15 @@ func (o *OP) resolveQueryEntries(ctx context.Context, extractor *openid4vp.Claim
 		if err != nil {
 			return nil, false, fmt.Errorf("%w: extract claims: %v", ErrOPAccessDenied, err)
 		}
+		// The extractor returns the whole JWT payload for jwt_vc_json; match
+		// and relay only the credential subject, never JWT envelope claims.
+		if resolvedQuery.Format == openid4vp.FormatJwtVCJson {
+			subject, ok := jwtVCSubject(claims)
+			if !ok {
+				return nil, false, nil
+			}
+			claims = subject
+		}
 		presentedTypes, err := resolvedQuery.verifyCredentialType(claims, token)
 		if err != nil {
 			return nil, false, nil
@@ -232,7 +271,7 @@ func evaluateCredentialSets(dcql ResolvedDCQL, satisfied map[string]bool) ([]Res
 		return nil, nil
 	}
 	var out []ResolvedCredentialSet
-	for _, set := range dcql.CredentialSets {
+	for i, set := range dcql.CredentialSets {
 		optionSatisfied := false
 		for _, option := range set.Options {
 			all := true
@@ -252,7 +291,7 @@ func evaluateCredentialSets(dcql ResolvedDCQL, satisfied map[string]bool) ([]Res
 			continue
 		}
 		if set.Required {
-			return nil, fmt.Errorf("%w: required credential set %q was not satisfied", ErrOPAccessDenied, set.ID)
+			return nil, fmt.Errorf("%w: required credential_sets entry %d was not satisfied", ErrOPAccessDenied, i)
 		}
 	}
 	return out, nil
@@ -336,10 +375,34 @@ func w3cTypes(token string) ([]string, bool) {
 	if err := json.Unmarshal(payload, &body); err != nil {
 		return nil, false
 	}
-	if vc, ok := body["vc"].(map[string]any); ok {
-		return typeList(vc["type"])
+	cred, ok := jwtVCCredential(body)
+	if !ok {
+		return nil, false
 	}
-	return typeList(body["type"])
+	return typeList(cred["type"])
+}
+
+// jwtVCCredential returns the credential object of a JWT payload: the "vc"
+// claim (JWT VC data model 1.1) or, when the payload carries
+// credentialSubject itself, the payload (VC data model 2.0 secured as JWT).
+func jwtVCCredential(payload map[string]any) (map[string]any, bool) {
+	if vc, ok := payload["vc"].(map[string]any); ok {
+		return vc, true
+	}
+	if _, ok := payload["credentialSubject"]; ok {
+		return payload, true
+	}
+	return nil, false
+}
+
+// jwtVCSubject returns the credentialSubject claims of a JWT VC payload.
+func jwtVCSubject(payload map[string]any) (map[string]any, bool) {
+	cred, ok := jwtVCCredential(payload)
+	if !ok {
+		return nil, false
+	}
+	subject, ok := cred["credentialSubject"].(map[string]any)
+	return subject, ok
 }
 
 func w3cDocumentTypes(doc map[string]any) ([]string, bool) {

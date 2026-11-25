@@ -12,12 +12,12 @@ import (
 )
 
 // assemblePresentedCredentialSets turns the presentation result into the
-// array shape defined in Section 5.1.1. When the request carried
-// credential_sets, each set is emitted from its first fully-satisfied
-// option; an unsatisfied REQUIRED set yields access_denied, while an
-// unsatisfied optional set is dropped rather than replaced by an
-// uncorrelated fallback. The single uncorrelated set is emitted only
-// when the request carried no credential_sets at all (scope-based mode).
+// array shape defined in Section 5.1.1: exactly one Credential Set. When
+// the request carried credential_sets, that set holds the entries of the
+// first fully-satisfied option of every satisfied credential_sets entry,
+// keyed by Credential Query id; an unsatisfied REQUIRED entry yields
+// access_denied and an unsatisfied optional one simply contributes
+// nothing.
 func (o *OP) assemblePresentedCredentialSets(result *OPPresentationResult) (PresentedCredentialSets, error) {
 	if result == nil {
 		return nil, fmt.Errorf("%w: nil presentation result", ErrOPAccessDenied)
@@ -25,9 +25,9 @@ func (o *OP) assemblePresentedCredentialSets(result *OPPresentationResult) (Pres
 	if !result.CredentialSetsRequested {
 		return PresentedCredentialSets{{Credentials: cloneEntries(result.Entries)}}, nil
 	}
-	sets := make(PresentedCredentialSets, 0, len(result.SatisfiedSets))
-	for _, s := range result.SatisfiedSets {
-		set := PresentedCredentialSet{CredentialSetID: s.ID, Credentials: map[string][]CredentialEntry{}}
+	creds := map[string][]CredentialEntry{}
+	for i, s := range result.SatisfiedSets {
+		matched := false
 		for _, option := range s.Options {
 			satisfied := true
 			for _, id := range option {
@@ -40,19 +40,19 @@ func (o *OP) assemblePresentedCredentialSets(result *OPPresentationResult) (Pres
 				continue
 			}
 			for _, id := range option {
-				set.Credentials[id] = append([]CredentialEntry(nil), result.Entries[id]...)
+				creds[id] = append([]CredentialEntry(nil), result.Entries[id]...)
 			}
+			matched = true
 			break
 		}
-		if len(set.Credentials) > 0 {
-			sets = append(sets, set)
-			continue
-		}
-		if s.Required {
-			return nil, fmt.Errorf("%w: required credential set %q is unsatisfied", ErrOPAccessDenied, s.ID)
+		if !matched && s.Required {
+			return nil, fmt.Errorf("%w: required credential_sets entry %d is unsatisfied", ErrOPAccessDenied, i)
 		}
 	}
-	return sets, nil
+	if len(creds) == 0 {
+		return nil, fmt.Errorf("%w: no credential_sets entry was satisfied", ErrOPAccessDenied)
+	}
+	return PresentedCredentialSets{{Credentials: creds}}, nil
 }
 
 // cloneEntries returns a deep-ish copy of the entries map (the
@@ -85,6 +85,11 @@ func (o *OP) deriveSub(opSession *OPSession, sets PresentedCredentialSets) (stri
 	if !ok {
 		return "", fmt.Errorf("%w: identity credential missing subject claim %v", ErrOPAccessDenied, cfg.SubjectClaim)
 	}
+	// Holders lacking a usable identifier must fail rather than all hash to
+	// the same pairwise sub.
+	if s, isString := raw.(string); raw == nil || (isString && s == "") {
+		return "", fmt.Errorf("%w: subject claim %v must not be null or empty", ErrOPAccessDenied, cfg.SubjectClaim)
+	}
 	if o.cfg.SubjectType == OPSubjectTypePublic {
 		// OIDC sub is a string identifier; coercing an arbitrary JSON value
 		// with %v is not injective ("1" and 1 collide) and an empty value is
@@ -98,7 +103,8 @@ func (o *OP) deriveSub(opSession *OPSession, sets PresentedCredentialSets) (stri
 	// Canonically encode the typed subject claim and length-prefix each
 	// HMAC component so distinct (client_id, subject) pairs — and subject
 	// values of different JSON types such as "1" and 1 — can never hash to
-	// the same pairwise sub.
+	// the same pairwise sub. The credential format and type namespace the
+	// subject, so equal identifiers in unrelated credential types stay apart.
 	if !subjectNumbersExact(raw) {
 		return "", fmt.Errorf("%w: subject claim %v contains a number outside the exactly representable range", ErrOPAccessDenied, cfg.SubjectClaim)
 	}
@@ -108,6 +114,7 @@ func (o *OP) deriveSub(opSession *OPSession, sets PresentedCredentialSets) (stri
 	}
 	h := hmac.New(sha256.New, o.cfg.PairwiseSalt)
 	writeLengthPrefixed(h, []byte(opSession.ClientID))
+	writeLengthPrefixed(h, []byte(typeKey(cfg.Format, cfg.Type)))
 	writeLengthPrefixed(h, subjectBytes)
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil)), nil
 }
@@ -192,28 +199,24 @@ func (s PresentedCredentialSets) selectIdentityEntry() (CredentialEntry, string,
 		}
 	}
 	// Rule 3: implementation-defined. Pick the entry with the
-	// lexicographically-smallest (credential_set_id, credential key)
-	// pair. §5.1.1 says outer array order is not significant, so we do
-	// not depend on it.
-	type candidate struct {
-		setID, key string
-		entry      CredentialEntry
-	}
-	var best *candidate
+	// lexicographically-smallest credential key; the outer array order is
+	// not significant, so it is not relied on.
+	var bestKey string
+	var bestEntry CredentialEntry
+	found := false
 	for _, set := range s {
 		for _, key := range sortedKeys(set.Credentials) {
 			entries := set.Credentials[key]
 			if len(entries) == 0 {
 				continue
 			}
-			c := candidate{setID: set.CredentialSetID, key: key, entry: entries[0]}
-			if best == nil || c.setID < best.setID || (c.setID == best.setID && c.key < best.key) {
-				best = &c
+			if !found || key < bestKey {
+				bestKey, bestEntry, found = key, entries[0], true
 			}
 		}
 	}
-	if best != nil {
-		return best.entry, best.key, nil
+	if found {
+		return bestEntry, bestKey, nil
 	}
 	return CredentialEntry{}, "", fmt.Errorf("%w: no identity credential", ErrOPAccessDenied)
 }
