@@ -108,11 +108,11 @@ func (r *RP) fetchDiscovery(ctx context.Context) (*RPDiscoveryMetadata, error) {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnown, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrRPDiscoveryUnreachable, err)
+		return nil, fmt.Errorf("%w: %w", ErrRPDiscoveryUnreachable, err)
 	}
 	resp, err := r.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrRPDiscoveryUnreachable, err)
+		return nil, fmt.Errorf("%w: %w", ErrRPDiscoveryUnreachable, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -123,7 +123,7 @@ func (r *RP) fetchDiscovery(ctx context.Context) (*RPDiscoveryMetadata, error) {
 	// the cap to detect overflow.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDiscoveryBodyBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: read body: %v", ErrRPDiscoveryUnreachable, err)
+		return nil, fmt.Errorf("%w: read body: %w", ErrRPDiscoveryUnreachable, err)
 	}
 	if int64(len(body)) > maxDiscoveryBodyBytes {
 		return nil, fmt.Errorf("%w: discovery document exceeds %d bytes", ErrRPDiscoveryUnreachable, maxDiscoveryBodyBytes)
