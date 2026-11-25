@@ -60,17 +60,16 @@ gh-auth: gh-install ## Authenticate GitHub CLI
 BUMP                    ?= patch
 FORCE                   ?=
 
+# Evaluated when the recipe runs, so only the release target is gated.
 check_current_branch:
-	$(info Current branch: $(CURRENT_BRANCH))
-ifeq ($(CURRENT_BRANCH),main)
-	$(info On main branch)
-else
-ifneq ($(FORCE),true)
-	$(error Not on main branch — use FORCE=true to override)
-else
-	$(warning Not on main branch — continuing because FORCE=true)
-endif
-endif
+	@echo "Current branch: $(CURRENT_BRANCH)"
+	@if [ "$(CURRENT_BRANCH)" = "main" ]; then \
+		echo "On main branch"; \
+	elif [ "$(FORCE)" != "true" ]; then \
+		echo "Error: not on main branch — use FORCE=true to override"; exit 1; \
+	else \
+		echo "Warning: not on main branch — continuing because FORCE=true"; \
+	fi
 
 release: check_current_branch ## Create and push a git tag (BUMP=major|minor|patch)
 	@echo "$(BUMP)" | grep -qE '^(major|minor|patch)$$' || \
