@@ -99,6 +99,9 @@ func (o *OP) deriveSub(opSession *OPSession, sets PresentedCredentialSets) (stri
 	// HMAC component so distinct (client_id, subject) pairs — and subject
 	// values of different JSON types such as "1" and 1 — can never hash to
 	// the same pairwise sub.
+	if !subjectNumbersExact(raw) {
+		return "", fmt.Errorf("%w: subject claim %v contains a number outside the exactly representable range", ErrOPAccessDenied, cfg.SubjectClaim)
+	}
 	subjectBytes, err := json.Marshal(raw)
 	if err != nil {
 		return "", fmt.Errorf("%w: encode subject claim: %v", ErrOPAccessDenied, err)
@@ -107,6 +110,30 @@ func (o *OP) deriveSub(opSession *OPSession, sets PresentedCredentialSets) (stri
 	writeLengthPrefixed(h, []byte(opSession.ClientID))
 	writeLengthPrefixed(h, subjectBytes)
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil)), nil
+}
+
+// subjectNumbersExact reports whether every number nested in v survives the
+// float64 decoding of the extractor unchanged, so distinct identifiers such
+// as 2^53 and 2^53+1 cannot collapse into the same hashed subject.
+func subjectNumbersExact(v any) bool {
+	switch n := v.(type) {
+	case map[string]any:
+		for _, e := range n {
+			if !subjectNumbersExact(e) {
+				return false
+			}
+		}
+	case []any:
+		for _, e := range n {
+			if !subjectNumbersExact(e) {
+				return false
+			}
+		}
+	case float64, float32, int, int32, int64, uint, uint32, uint64, json.Number:
+		_, ok := toFloat64(n)
+		return ok
+	}
+	return true
 }
 
 // writeLengthPrefixed writes an 8-byte big-endian length header followed
@@ -126,9 +153,8 @@ func writeLengthPrefixed(h hash.Hash, b []byte) {
 // authorization time (ResolvedCredentialQuery.Scope) is used to recover
 // the configuration (§5.5 rule 3).
 func (o *OP) subjectClaimConfigFor(opSession *OPSession, key string) (OPCredentialTypeConfig, bool) {
-	if cfg, ok := o.cfg.CredentialPresentations[key]; ok {
-		return cfg, true
-	}
+	// A query id is opaque and may equal an unrelated scope name, so the
+	// scope bound to the query wins over a direct scope lookup.
 	for _, rq := range opSession.DCQL.Credentials {
 		if rq.ID == key && rq.Scope != "" {
 			if cfg, ok := o.cfg.CredentialPresentations[rq.Scope]; ok {
@@ -136,7 +162,8 @@ func (o *OP) subjectClaimConfigFor(opSession *OPSession, key string) (OPCredenti
 			}
 		}
 	}
-	return OPCredentialTypeConfig{}, false
+	cfg, ok := o.cfg.CredentialPresentations[key]
+	return cfg, ok
 }
 
 // selectIdentityEntry implements the three-rule selection of §5.5.

@@ -26,7 +26,7 @@ only role-appropriate members on `*OP` / `*RP`.
 
 ## Requirements
 
-- Go 1.26 or later.
+- Go 1.27.4 or later (the `go` directive in `go.mod`).
 - Depends on [`github.com/SUNET/vc`](https://github.com/SUNET/vc)
   (`pkg/openid4vp`, `pkg/jose`, `pkg/oauth2`, `pkg/pki`) as the
   underlying OpenID4VP + JOSE + OAuth 2.0 toolkit.
@@ -90,6 +90,8 @@ url, err := rp.BuildAuthorizationURL(ctx, credbridge.RPAuthorizationRequestOptio
     State:  freshState,
 })
 
+// ParseIDToken does not verify the signature: idToken MUST come from the
+// OP's token endpoint over TLS, or be verified independently first.
 claims, err := rp.ParseIDToken(ctx, idToken, freshNonce)
 if err != nil {
     // invalid ID Token: reject the login; claims is nil

@@ -348,7 +348,7 @@ func TestRP_Discover_HTTPPaths(t *testing.T) {
 	defer down.Close()
 	rpDown, err := credbridge.NewRP(credbridge.RPConfig{
 		IssuerURL: down.URL, ClientID: "rp", RedirectURI: "https://rp.example.org/cb",
-		HTTPClient: down.Client(),
+		HTTPClient: down.Client(), AllowInsecureHTTP: true,
 	})
 	require.NoError(t, err, "NewRP")
 	_, err = rpDown.Discover(t.Context())
@@ -366,7 +366,7 @@ func TestRP_Discover_HTTPPaths(t *testing.T) {
 	defer okSrv.Close()
 	rpOK, err := credbridge.NewRP(credbridge.RPConfig{
 		IssuerURL: okSrv.URL, ClientID: "rp", RedirectURI: "https://rp.example.org/cb",
-		HTTPClient: okSrv.Client(),
+		HTTPClient: okSrv.Client(), AllowInsecureHTTP: true,
 	})
 	require.NoError(t, err, "NewRP")
 	md, err := rpOK.Discover(t.Context())
@@ -384,7 +384,7 @@ func TestRP_Discover_HTTPPaths(t *testing.T) {
 	defer mismatch.Close()
 	rpMismatch, err := credbridge.NewRP(credbridge.RPConfig{
 		IssuerURL: mismatch.URL, ClientID: "rp", RedirectURI: "https://rp.example.org/cb",
-		HTTPClient: mismatch.Client(),
+		HTTPClient: mismatch.Client(), AllowInsecureHTTP: true,
 	})
 	require.NoError(t, err, "NewRP")
 	_, err = rpMismatch.Discover(t.Context())

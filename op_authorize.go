@@ -25,11 +25,11 @@ type OPAuthorizationRequest struct {
 	// member inside the OIDC "claims" parameter (Section 4.1.2).
 	DCQLQuery *openid4vp.DCQL
 
-	// CredentialSetIDs carries the OPTIONAL Credential Set "id" values
-	// that RFC §5.1.1 layers on top of OpenID4VP's Credential Set Query.
-	// Slot i corresponds to DCQLQuery.CredentialSets[i];
-	// leave a slot empty to omit the id for that entry. Extra slots past
-	// len(DCQLQuery.CredentialSets) are ignored.
+	// CredentialSetIDs carries the REQUIRED Credential Set "id" values
+	// that RFC §4.1.2 layers on top of OpenID4VP's Credential Set Query.
+	// Slot i corresponds to DCQLQuery.CredentialSets[i]; every entry needs
+	// a non-empty id using the DCQL id charset, unique within the request.
+	// Extra slots past len(DCQLQuery.CredentialSets) are ignored.
 	CredentialSetIDs []string
 }
 
@@ -220,7 +220,15 @@ func metaTypeKey(cq openid4vp.CredentialQuery) (string, error) {
 		if len(cq.Meta.TypeValues) == 0 || len(cq.Meta.TypeValues[0]) == 0 {
 			return "", errors.New("w3c credential query missing type_values")
 		}
-		return typeKey(cq.Format, cq.Meta.TypeValues[0]), nil
+		// The query binds to one scope (and its subject claim), so every
+		// alternative must name that same credential type.
+		key := typeKey(cq.Format, cq.Meta.TypeValues[0])
+		for _, alt := range cq.Meta.TypeValues[1:] {
+			if typeKey(cq.Format, alt) != key {
+				return "", errors.New("w3c type_values alternatives must all name the same credential type")
+			}
+		}
+		return key, nil
 	default:
 		return "", fmt.Errorf("unsupported credential format %q", cq.Format)
 	}

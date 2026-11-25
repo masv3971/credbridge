@@ -56,7 +56,7 @@ func TestRP_Discover(t *testing.T) {
 	defer stub2.Close()
 	rp2, err := credbridge.NewRP(credbridge.RPConfig{
 		IssuerURL: stub2.URL, ClientID: "rp", RedirectURI: "https://rp.example.org/cb",
-		HTTPClient: stub2.Client(),
+		HTTPClient: stub2.Client(), AllowInsecureHTTP: true,
 	})
 	require.NoError(t, err, "NewRP")
 	stub2.Close()
@@ -75,7 +75,7 @@ func TestRP_Discover(t *testing.T) {
 	defer stub3.Close()
 	rp3, err := credbridge.NewRP(credbridge.RPConfig{
 		IssuerURL: stub3.URL, ClientID: "rp", RedirectURI: "https://rp.example.org/cb",
-		HTTPClient: stub3.Client(),
+		HTTPClient: stub3.Client(), AllowInsecureHTTP: true,
 	})
 	require.NoError(t, err, "NewRP")
 

@@ -96,8 +96,8 @@ release: check_current_branch ## Create and push a git tag (BUMP=major|minor|pat
 	echo ""; \
 	echo "Bumping $$LATEST -> $$NEW_TAG ($(BUMP))"; \
 	echo ""; \
-	git tag -a "$$NEW_TAG" -m "Release $$NEW_TAG"; \
-	git push origin "$$NEW_TAG"; \
+	git tag -a "$$NEW_TAG" -m "Release $$NEW_TAG" && \
+	git push origin "$$NEW_TAG" || exit 1; \
 	echo ""; \
 	echo "==> Release $$NEW_TAG created and pushed"; \
 	echo ""

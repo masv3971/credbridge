@@ -1,6 +1,9 @@
 package credbridge
 
-import "math"
+import (
+	"encoding/json"
+	"math"
+)
 
 // MatchValue implements the claim-value matching rules of Appendix C.
 //
@@ -80,6 +83,15 @@ func toFloat64(v any) (float64, bool) {
 		return f, n == uint64(f)
 	case float32:
 		return float64(n), true
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return toFloat64(i)
+		}
+		f, err := n.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return toFloat64(f)
 	case float64:
 		if math.IsNaN(n) || math.IsInf(n, 0) {
 			return 0, false

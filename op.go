@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/SUNET/vc/pkg/openid4vp"
@@ -319,8 +320,11 @@ const defaultOPSessionTTL = 10 * time.Minute
 // defaultOPStorage is the goroutine-safe TTL-cached OPStorage used
 // when the caller does not supply one via OPConfig.Storage.
 type defaultOPStorage struct {
-	cache *ttlcache.Cache[string, *OPSession]
-	ttl   time.Duration
+	cache    *ttlcache.Cache[string, *OPSession]
+	ttl      time.Duration
+	stop     chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 func newDefaultOPStorage() OPStorage {
@@ -328,18 +332,37 @@ func newDefaultOPStorage() OPStorage {
 		ttlcache.WithTTL[string, *OPSession](defaultOPSessionTTL),
 		ttlcache.WithDisableTouchOnHit[string, *OPSession](),
 	)
-	// Start the janitor so expired authorization sessions are evicted and
-	// the nominal TTL actually bounds memory use; stopped from OP.Close.
-	go cache.Start()
-	return &defaultOPStorage{
+	s := &defaultOPStorage{
 		cache: cache,
 		ttl:   defaultOPSessionTTL,
+		stop:  make(chan struct{}),
+		done:  make(chan struct{}),
+	}
+	// ttlcache's own Start/Stop race (Stop is a no-op before Start runs), so
+	// run the eviction loop here; Stop always waits for it to exit.
+	go s.janitor()
+	return s
+}
+
+func (s *defaultOPStorage) janitor() {
+	defer close(s.done)
+	ticker := time.NewTicker(defaultOPSessionTTL / 2)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.cache.DeleteExpired()
+		case <-s.stop:
+			return
+		}
 	}
 }
 
-// Stop halts the TTL cache janitor goroutine. Called from OP.Close.
+// Stop halts the eviction goroutine and waits for it to exit. Called from
+// OP.Close; safe to call more than once.
 func (s *defaultOPStorage) Stop() {
-	s.cache.Stop()
+	s.stopOnce.Do(func() { close(s.stop) })
+	<-s.done
 }
 
 // Put stores opSession keyed by its ID.

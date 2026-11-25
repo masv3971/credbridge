@@ -48,6 +48,13 @@ type ResolvedCredentialQuery struct {
 	Scope  string // scope value if this query was derived from a scope, else ""
 	Format string
 	Type   []string
+	// TypeValues holds every W3C type_values alternative; a credential
+	// satisfies the query when it carries all types of any one alternative.
+	// Type holds the first alternative.
+	TypeValues [][]string
+	// Multiple is the effective DCQL "multiple" setting (default false):
+	// whether the wallet may return more than one credential for the query.
+	Multiple bool
 	// Claims is the set of DCQL claim entries the RP asked for. Empty
 	// means "all pre-registered claims" (scope-based mode or omitted
 	// DCQL claims member).

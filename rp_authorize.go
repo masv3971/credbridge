@@ -27,10 +27,10 @@ type RPAuthorizationRequestOptions struct {
 	// ErrRPDCQLNotSupported if the OP's discovery document reports
 	// dcql_query_supported=false.
 	DCQLQuery *openid4vp.DCQL
-	// CredentialSetIDs carries the OPTIONAL Credential Set "id" values
-	// that RFC §5.1.1 layers on top of OpenID4VP DCQL.
-	// Slot i aligns with DCQLQuery.CredentialSets[i]; leave empty to
-	// omit the id for that entry.
+	// CredentialSetIDs carries the REQUIRED Credential Set "id" values
+	// that RFC §4.1.2 layers on top of OpenID4VP DCQL.
+	// Slot i aligns with DCQLQuery.CredentialSets[i]; every entry needs a
+	// non-empty id using the DCQL id charset, unique within the request.
 	CredentialSetIDs []string
 	// ResponseType defaults to "code".
 	ResponseType string

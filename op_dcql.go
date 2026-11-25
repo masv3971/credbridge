@@ -198,6 +198,7 @@ func (o *OP) resolveCredentialQuery(cq openid4vp.CredentialQuery, scope string) 
 		Format:                            cq.Format,
 		ClaimSets:                         cloneOptions(cq.ClaimSet),
 		RequireCryptographicHolderBinding: cq.RequiresCryptographicHolderBinding(),
+		Multiple:                          cq.AllowsMultiple(),
 	}
 	switch cq.Format {
 	case openid4vp.FormatSDJWTVC:
@@ -207,6 +208,7 @@ func (o *OP) resolveCredentialQuery(cq openid4vp.CredentialQuery, scope string) 
 			resolvedQuery.Type = []string{cq.Meta.DoctypeValue}
 		}
 	case openid4vp.FormatLdpVCDCQL, openid4vp.FormatJwtVCJson:
+		resolvedQuery.TypeValues = cloneOptions(cq.Meta.TypeValues)
 		if len(cq.Meta.TypeValues) > 0 {
 			resolvedQuery.Type = append([]string(nil), cq.Meta.TypeValues[0]...)
 		}

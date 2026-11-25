@@ -3,6 +3,7 @@ package credbridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,20 +40,69 @@ func (m *RPDiscoveryMetadata) SupportsCredentialScope(scope string) bool {
 const maxDiscoveryBodyBytes int64 = 1 << 20
 
 type discoveryCache struct {
-	mu      sync.Mutex
-	value   *RPDiscoveryMetadata
-	expires time.Time
+	mu       sync.Mutex
+	value    *RPDiscoveryMetadata
+	expires  time.Time
+	inflight *discoveryCall
+}
+
+// discoveryCall is one in-flight discovery fetch shared by concurrent
+// callers.
+type discoveryCall struct {
+	done chan struct{}
+	md   *RPDiscoveryMetadata
+	err  error
 }
 
 // Discover fetches /.well-known/openid-configuration from the OP, decodes
-// it, and caches the result for RPConfig.DiscoveryCacheTTL.
+// it, and caches the result for RPConfig.DiscoveryCacheTTL. Concurrent
+// callers share one fetch and each honours its own context while waiting.
 func (r *RP) Discover(ctx context.Context) (*RPDiscoveryMetadata, error) {
-	r.cache.mu.Lock()
-	defer r.cache.mu.Unlock()
-	if r.cache.value != nil && r.now().Before(r.cache.expires) {
-		return r.cache.value, nil
+	for {
+		r.cache.mu.Lock()
+		if r.cache.value != nil && r.now().Before(r.cache.expires) {
+			md := r.cache.value
+			r.cache.mu.Unlock()
+			return md, nil
+		}
+		if call := r.cache.inflight; call != nil {
+			r.cache.mu.Unlock()
+			select {
+			case <-call.done:
+			case <-ctx.Done():
+				return nil, fmt.Errorf("%w: %v", ErrRPDiscoveryUnreachable, ctx.Err())
+			}
+			// A fetch aborted by another caller's context must not fail
+			// callers whose contexts are still live; fetch again instead.
+			if call.err != nil && ctx.Err() == nil &&
+				(errors.Is(call.err, context.Canceled) || errors.Is(call.err, context.DeadlineExceeded)) {
+				continue
+			}
+			return call.md, call.err
+		}
+		call := &discoveryCall{done: make(chan struct{})}
+		r.cache.inflight = call
+		r.cache.mu.Unlock()
+
+		md, err := r.fetchDiscovery(ctx)
+
+		r.cache.mu.Lock()
+		if err == nil {
+			r.cache.value = md
+			r.cache.expires = r.now().Add(r.cfg.DiscoveryCacheTTL)
+		}
+		r.cache.inflight = nil
+		call.md, call.err = md, err
+		r.cache.mu.Unlock()
+		close(call.done)
+		return md, err
 	}
-	wellKnown, err := wellKnownConfigURL(r.cfg.IssuerURL)
+}
+
+// fetchDiscovery performs the HTTP discovery request and validates the
+// returned document.
+func (r *RP) fetchDiscovery(ctx context.Context) (*RPDiscoveryMetadata, error) {
+	wellKnown, err := wellKnownConfigURL(r.cfg.IssuerURL, r.cfg.AllowInsecureHTTP)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrRPDiscoveryUnreachable, err)
 	}
@@ -85,8 +135,6 @@ func (r *RP) Discover(ctx context.Context) (*RPDiscoveryMetadata, error) {
 	if md.Issuer != r.cfg.IssuerURL {
 		return nil, fmt.Errorf("%w: issuer mismatch: got %q want %q", ErrRPDiscoveryUnreachable, md.Issuer, r.cfg.IssuerURL)
 	}
-	r.cache.value = md
-	r.cache.expires = r.now().Add(r.cfg.DiscoveryCacheTTL)
 	return md, nil
 }
 
@@ -99,13 +147,12 @@ func (r *RP) PrimeDiscovery(md *RPDiscoveryMetadata) {
 	r.cache.expires = r.now().Add(r.cfg.DiscoveryCacheTTL)
 }
 
-// wellKnownConfigURL applies the OIDC Discovery §4 issuer-to-well-known
-// transformation: /.well-known/openid-configuration is inserted between
-// the issuer's authority and its path component, so an issuer such as
+// wellKnownConfigURL applies the OIDC Discovery §4 rule: the suffix
+// /.well-known/openid-configuration is appended to the issuer path, so
 // https://op.example/tenant maps to
-// https://op.example/.well-known/openid-configuration/tenant rather than
-// https://op.example/tenant/.well-known/openid-configuration.
-func wellKnownConfigURL(issuer string) (string, error) {
+// https://op.example/tenant/.well-known/openid-configuration. Only
+// https issuers are accepted unless allowInsecure is set.
+func wellKnownConfigURL(issuer string, allowInsecure bool) (string, error) {
 	u, err := url.Parse(issuer)
 	if err != nil {
 		return "", fmt.Errorf("invalid issuer %q: %w", issuer, err)
@@ -113,7 +160,10 @@ func wellKnownConfigURL(issuer string) (string, error) {
 	if u.Scheme == "" || u.Host == "" {
 		return "", fmt.Errorf("issuer %q is not an absolute URL", issuer)
 	}
-	path := strings.TrimRight(u.Path, "/")
-	u.Path = "/.well-known/openid-configuration" + path
+	if u.Scheme != "https" && !(allowInsecure && u.Scheme == "http") {
+		return "", fmt.Errorf("issuer %q must use https", issuer)
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + "/.well-known/openid-configuration"
+	u.RawPath = ""
 	return u.String(), nil
 }

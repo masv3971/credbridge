@@ -28,8 +28,9 @@ type PresentedCredentialSet struct {
 type PresentedCredentialSets []PresentedCredentialSet
 
 // CredentialEntry is a single presented credential (Section 5.1.2). Every
-// entry MUST carry Type and Verification; exactly one of Claims or
-// Namespaces MUST be populated.
+// entry MUST carry Type; exactly one of Claims or Namespaces MUST be
+// populated. Verification is optional and, when absent, is treated as
+// {"trust_status": "not_checked"} (see EffectiveVerification).
 type CredentialEntry struct {
 	Type             []string                  `json:"type"`
 	Issuer           string                    `json:"issuer,omitempty"`
@@ -226,12 +227,18 @@ func (v Verification) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(v.AdditionalMembers) == 0 {
+	// omitempty drops a non-nil empty map, but a crit entry naming
+	// protected_headers is satisfied only by its presence.
+	emptyProtected := v.ProtectedHeaders != nil && len(v.ProtectedHeaders) == 0
+	if len(v.AdditionalMembers) == 0 && !emptyProtected {
 		return base, nil
 	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(base, &obj); err != nil {
 		return nil, err
+	}
+	if emptyProtected {
+		obj["protected_headers"] = json.RawMessage("{}")
 	}
 	for k, val := range v.AdditionalMembers {
 		if _, reserved := reservedVerificationKeys[k]; reserved {

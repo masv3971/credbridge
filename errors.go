@@ -55,7 +55,7 @@ var (
 	ErrRPDiscoveryUnreachable = errors.New("credbridge/rp: discovery document unreachable")
 
 	// ErrRPUnexpectedResponseShape signals that the presented_credential_sets
-	// value in the token was not the JSON array shape defined in Section
-	// 5.1.1.
-	ErrRPUnexpectedResponseShape = errors.New("credbridge/rp: presented_credential_sets is not a JSON array")
+	// value in the token did not have the structure defined in Sections
+	// 5.1.1 and 5.1.2.
+	ErrRPUnexpectedResponseShape = errors.New("credbridge/rp: presented_credential_sets has an unexpected structure")
 )

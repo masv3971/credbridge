@@ -2,7 +2,10 @@ package credbridge
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/SUNET/vc/pkg/openid4vp"
 )
@@ -65,7 +68,15 @@ func (r ResolvedCredentialQuery) toCredentialQuery() openid4vp.CredentialQuery {
 			cq.Meta.DoctypeValue = r.Type[0]
 		}
 	case openid4vp.FormatLdpVCDCQL, openid4vp.FormatJwtVCJson:
-		cq.Meta.TypeValues = [][]string{append([]string(nil), r.Type...)}
+		cq.Meta.TypeValues = cloneOptions(r.TypeValues)
+		if len(cq.Meta.TypeValues) == 0 {
+			cq.Meta.TypeValues = [][]string{append([]string(nil), r.Type...)}
+		}
+	}
+	// DCQL defaults multiple to false, so only an explicit true is sent.
+	if r.Multiple {
+		multiple := true
+		cq.Multiple = &multiple
 	}
 	for _, cl := range r.Claims {
 		cq.Claims = append(cq.Claims, openid4vp.ClaimQuery{
@@ -173,16 +184,17 @@ func (o *OP) HandleWalletResponse(ctx context.Context, opSession *OPSession, res
 // when a constraint is unmet (the query is unsatisfied but the overall
 // response may still succeed); and an error only for a malformed token.
 func (o *OP) resolveQueryEntries(ctx context.Context, extractor *openid4vp.ClaimsExtractor, resolvedQuery ResolvedCredentialQuery, tokens []string) ([]CredentialEntry, bool, error) {
+	if len(tokens) > 1 && !resolvedQuery.Multiple {
+		return nil, false, nil
+	}
 	var queryEntries []CredentialEntry
 	for _, token := range tokens {
 		claims, err := extractor.ExtractClaimsFromVPToken(ctx, token)
 		if err != nil {
 			return nil, false, fmt.Errorf("%w: extract claims: %v", ErrOPAccessDenied, err)
 		}
-		if err := resolvedQuery.verifyCredentialType(claims); err != nil {
-			return nil, false, nil
-		}
-		if err := resolvedQuery.postValidateValues(claims); err != nil {
+		presentedTypes, err := resolvedQuery.verifyCredentialType(claims, token)
+		if err != nil {
 			return nil, false, nil
 		}
 		matchedOption, err := resolvedQuery.selectClaimSetOption(claims)
@@ -191,7 +203,7 @@ func (o *OP) resolveQueryEntries(ctx context.Context, extractor *openid4vp.Claim
 		}
 		filtered := resolvedQuery.filterClaims(claims, matchedOption)
 		queryEntries = append(queryEntries, CredentialEntry{
-			Type:   resolvedQuery.entryType(claims),
+			Type:   resolvedQuery.entryType(presentedTypes),
 			Claims: filtered,
 			Verification: &Verification{
 				TrustStatus: TrustStatusNotChecked,
@@ -249,16 +261,18 @@ func evaluateCredentialSets(dcql ResolvedDCQL, satisfied map[string]bool) ([]Res
 // verifyCredentialType confirms the presented credential's format-specific
 // type (vct for SD-JWT VC, type array for W3C) matches one of the types
 // the RP requested, so a credential of a different type cannot be
-// mislabelled as the requested one (§5.1.2).
-func (r ResolvedCredentialQuery) verifyCredentialType(claims map[string]any) error {
+// mislabelled as the requested one (§5.1.2). For W3C formats it returns
+// the presented credential's type array, read from token because the
+// extractor yields only credentialSubject claims.
+func (r ResolvedCredentialQuery) verifyCredentialType(claims map[string]any, token string) ([]string, error) {
 	if len(r.Type) == 0 {
-		return nil
+		return nil, nil
 	}
 	switch r.Format {
 	case openid4vp.FormatSDJWTVC:
 		vct, _ := claims["vct"].(string)
 		if !containsString(r.Type, vct) {
-			return fmt.Errorf("%w: presented vct %q does not match requested type", ErrOPAccessDenied, vct)
+			return nil, fmt.Errorf("%w: presented vct %q does not match requested type", ErrOPAccessDenied, vct)
 		}
 	case openid4vp.FormatMsoMdoc:
 		// The pinned extractor auto-detects the token format and flattens
@@ -266,83 +280,152 @@ func (r ResolvedCredentialQuery) verifyCredentialType(claims map[string]any) err
 		// requested docType cannot be verified and an SD-JWT could be
 		// submitted under an mdoc id and mislabelled. Reject mdoc
 		// presentations until the extractor exposes the docType.
-		return fmt.Errorf("%w: mso_mdoc docType cannot be verified by the pinned extractor", ErrOPAccessDenied)
+		return nil, fmt.Errorf("%w: mso_mdoc docType cannot be verified by the pinned extractor", ErrOPAccessDenied)
 	case openid4vp.FormatLdpVCDCQL, openid4vp.FormatJwtVCJson:
-		// A W3C type_values inner array is an AND constraint: the
-		// credential must carry every requested type. A missing or
-		// non-array "type" claim is malformed and cannot satisfy it.
-		types, ok := claims["type"].([]any)
+		// Each type_values alternative is an AND constraint; the credential
+		// satisfies the query when it carries every type of any one of them.
+		presented, ok := w3cTypes(token)
 		if !ok {
-			return fmt.Errorf("%w: presented credential has a missing or malformed type claim", ErrOPAccessDenied)
+			return nil, fmt.Errorf("%w: presented credential has a missing or malformed type", ErrOPAccessDenied)
 		}
-		present := make(map[string]struct{}, len(types))
-		for _, got := range types {
-			if s, ok := got.(string); ok {
-				present[s] = struct{}{}
+		alternatives := r.TypeValues
+		if len(alternatives) == 0 {
+			alternatives = [][]string{r.Type}
+		}
+		for _, alt := range alternatives {
+			if containsAll(presented, alt) {
+				return presented, nil
 			}
 		}
-		for _, want := range r.Type {
-			if _, ok := present[want]; !ok {
-				return fmt.Errorf("%w: presented type is missing required value %q", ErrOPAccessDenied, want)
-			}
+		return nil, fmt.Errorf("%w: presented type satisfies no requested type_values alternative", ErrOPAccessDenied)
+	}
+	return nil, nil
+}
+
+// containsAll reports whether every element of want is present in have.
+func containsAll(have, want []string) bool {
+	for _, w := range want {
+		if !containsString(have, w) {
+			return false
 		}
 	}
-	return nil
+	return true
+}
+
+// w3cTypes returns the credential type array of a W3C token: a JWT
+// (jwt_vc_json, type under "vc" or at the top level), a credential
+// document, or a presentation embedding exactly one credential.
+func w3cTypes(token string) ([]string, bool) {
+	trimmed := strings.TrimSpace(token)
+	if strings.HasPrefix(trimmed, "{") {
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &doc); err != nil {
+			return nil, false
+		}
+		return w3cDocumentTypes(doc)
+	}
+	parts := strings.Split(trimmed, ".")
+	if len(parts) < 3 {
+		return nil, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, false
+	}
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return nil, false
+	}
+	if vc, ok := body["vc"].(map[string]any); ok {
+		return typeList(vc["type"])
+	}
+	return typeList(body["type"])
+}
+
+func w3cDocumentTypes(doc map[string]any) ([]string, bool) {
+	embedded, ok := doc["verifiableCredential"]
+	if !ok {
+		return typeList(doc["type"])
+	}
+	// Several embedded credentials would need per-credential type
+	// attribution that the merged subject claims cannot provide.
+	list, ok := embedded.([]any)
+	if !ok {
+		list = []any{embedded}
+	}
+	if len(list) != 1 {
+		return nil, false
+	}
+	switch e := list[0].(type) {
+	case string:
+		return w3cTypes(e)
+	case map[string]any:
+		return w3cDocumentTypes(e)
+	}
+	return nil, false
+}
+
+// typeList converts a JSON "type" member (string or string array) to a
+// non-empty []string.
+func typeList(v any) ([]string, bool) {
+	switch t := v.(type) {
+	case string:
+		return []string{t}, t != ""
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			s, ok := e.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, s)
+		}
+		return out, len(out) > 0
+	}
+	return nil, false
 }
 
 // entryType returns the Credential Entry "type" array. W3C credentials
 // keep their full presented type array (§5.1.2), which may be a superset
 // of the requested types; other formats use the requested type.
-func (r ResolvedCredentialQuery) entryType(claims map[string]any) []string {
-	if r.Format == openid4vp.FormatLdpVCDCQL || r.Format == openid4vp.FormatJwtVCJson {
-		if types, ok := claims["type"].([]any); ok {
-			out := make([]string, 0, len(types))
-			for _, t := range types {
-				if s, ok := t.(string); ok {
-					out = append(out, s)
-				}
-			}
-			if len(out) > 0 {
-				return out
-			}
-		}
+func (r ResolvedCredentialQuery) entryType(presented []string) []string {
+	if len(presented) > 0 {
+		return append([]string(nil), presented...)
 	}
 	return append([]string(nil), r.Type...)
 }
 
-// postValidateValues enforces the Appendix A.4 rule that "values"
-// constraints must be re-validated by the OP after presentation.
-func (r ResolvedCredentialQuery) postValidateValues(claims map[string]any) error {
-	for _, cl := range r.Claims {
-		if len(cl.Values) == 0 {
-			continue
-		}
-		got, ok := lookupClaim(claims, cl.Path)
-		if !ok {
-			return fmt.Errorf("%w: wallet did not disclose claim %v", ErrOPAccessDenied, cl.Path)
-		}
-		matched := false
-		for _, want := range cl.Values {
-			if MatchValue(got, want) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return fmt.Errorf("%w: disclosed value for %v not in requested values", ErrOPAccessDenied, cl.Path)
+// claimSatisfied reports whether cl is disclosed in claims and, when the
+// RP constrained "values" (Appendix A.4), matches one of them.
+func claimSatisfied(cl ResolvedClaim, claims map[string]any) bool {
+	got, ok := lookupClaim(claims, cl.Path)
+	if !ok {
+		return false
+	}
+	if len(cl.Values) == 0 {
+		return true
+	}
+	for _, want := range cl.Values {
+		if MatchValue(got, want) {
+			return true
 		}
 	}
-	return nil
+	return false
 }
 
 // selectClaimSetOption implements §4.1.2's deterministic "first
-// matching option" selection: iterate ClaimSets in RP-supplied order
-// and return the first option whose listed claim ids are all present
-// in the disclosed claims. Returns nil (no option) when ClaimSets is
-// empty. Returns [ErrOPAccessDenied] when ClaimSets is non-empty and
-// no option is satisfied.
+// satisfied option" selection: iterate ClaimSets in RP-supplied order
+// and return the first option whose claims are all disclosed and match
+// their "values" constraints. Without ClaimSets every requested claim
+// must be satisfied and the returned option is nil. Returns
+// [ErrOPAccessDenied] when the disclosure does not satisfy the query.
 func (r ResolvedCredentialQuery) selectClaimSetOption(claims map[string]any) ([]string, error) {
 	if len(r.ClaimSets) == 0 {
+		for _, cl := range r.Claims {
+			if !claimSatisfied(cl, claims) {
+				return nil, fmt.Errorf("%w: requested claim %v is missing or not in requested values", ErrOPAccessDenied, cl.Path)
+			}
+		}
 		return nil, nil
 	}
 	byID := make(map[string]ResolvedClaim, len(r.Claims))
@@ -353,11 +436,7 @@ func (r ResolvedCredentialQuery) selectClaimSetOption(claims map[string]any) ([]
 		ok := true
 		for _, id := range option {
 			cl, exists := byID[id]
-			if !exists {
-				ok = false
-				break
-			}
-			if _, present := lookupClaim(claims, cl.Path); !present {
+			if !exists || !claimSatisfied(cl, claims) {
 				ok = false
 				break
 			}
