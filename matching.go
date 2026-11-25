@@ -3,6 +3,7 @@ package credbridge
 import (
 	"encoding/json"
 	"math"
+	"math/big"
 )
 
 // MatchValue implements the claim-value matching rules of Appendix C.
@@ -53,6 +54,14 @@ func MatchValue(disclosed, expected any) bool {
 		}
 		return true
 	}
+	// A json.Number carries its exact decimal literal; a float64 round trip
+	// would equate 1.0000000000000001 with 1.
+	if en, ok := expected.(json.Number); ok {
+		return matchExactNumber(disclosed, en)
+	}
+	if dn, ok := disclosed.(json.Number); ok {
+		return matchExactNumber(expected, dn)
+	}
 	// Numeric types: normalise to float64 and require both sides numeric.
 	ef, eok := toFloat64(expected)
 	df, dok := toFloat64(disclosed)
@@ -60,6 +69,35 @@ func MatchValue(disclosed, expected any) bool {
 		return false
 	}
 	return ef == df
+}
+
+// matchExactNumber compares other with n as exact rationals. A non-JSON
+// number type that is not exactly representable never matches.
+func matchExactNumber(other any, n json.Number) bool {
+	nr, ok := new(big.Rat).SetString(n.String())
+	if !ok {
+		return false
+	}
+	var or *big.Rat
+	switch o := other.(type) {
+	case json.Number:
+		or, ok = new(big.Rat).SetString(o.String())
+		if !ok {
+			return false
+		}
+	case float64, float32, int, int32, int64, uint, uint32, uint64:
+		f, ok := toFloat64(o)
+		if !ok {
+			return false
+		}
+		or = new(big.Rat)
+		if or.SetFloat64(f) == nil {
+			return false
+		}
+	default:
+		return false
+	}
+	return nr.Cmp(or) == 0
 }
 
 // toFloat64 normalises a numeric value to float64 for Appendix C
