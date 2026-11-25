@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"math/big"
+	"strconv"
 )
 
 // MatchValue implements the claim-value matching rules of Appendix C.
@@ -71,8 +72,10 @@ func MatchValue(disclosed, expected any) bool {
 	return ef == df
 }
 
-// matchExactNumber compares other with n as exact rationals. A non-JSON
-// number type that is not exactly representable never matches.
+// matchExactNumber compares other with n as exact rationals. A float is
+// taken at its shortest decimal form, the way it serialises to JSON, so
+// float64(0.1) equals json.Number("0.1"). A non-JSON number type that is
+// not exactly representable never matches.
 func matchExactNumber(other any, n json.Number) bool {
 	nr, ok := new(big.Rat).SetString(n.String())
 	if !ok {
@@ -90,8 +93,12 @@ func matchExactNumber(other any, n json.Number) bool {
 		if !ok {
 			return false
 		}
-		or = new(big.Rat)
-		if or.SetFloat64(f) == nil {
+		bits := 64
+		if _, isFloat32 := o.(float32); isFloat32 {
+			bits = 32
+		}
+		or, ok = new(big.Rat).SetString(strconv.FormatFloat(f, 'g', -1, bits))
+		if !ok {
 			return false
 		}
 	default:
