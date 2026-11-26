@@ -56,6 +56,9 @@ op, err := credbridge.NewOP(ctx, credbridge.OPConfig{
         // look up clientID in your registry; require an exact redirectURI match
         return nil
     },
+    // Required. Checks signature, trusted authority and holder binding
+    // (against req.Nonce and req.ClientID) of every presented credential.
+    CredentialVerifier: myVerifier, // credbridge.CredentialVerifier
     CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
         "ehic": {
             Format:       openid4vp.FormatSDJWTVC,

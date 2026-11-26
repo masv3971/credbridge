@@ -24,6 +24,7 @@ func twoScopeOP(t *testing.T, subjectType credbridge.OPSubjectType) *credbridge.
 		AuthorizationEndpoint: "https://op.example.org/authorize",
 		TokenEndpoint:         "https://op.example.org/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                testsigner.MustNew(),
 		DCQLQuerySupported:    true,
 		SubjectType:           subjectType,
@@ -164,6 +165,7 @@ func TestOP_TypeValuesAlternatives(t *testing.T) {
 		AuthorizationEndpoint: "https://op.example.org/authorize",
 		TokenEndpoint:         "https://op.example.org/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                testsigner.MustNew(),
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -201,6 +203,7 @@ func TestOP_W3CDocumentTypeFromDocument(t *testing.T) {
 		AuthorizationEndpoint: "https://op.example.org/authorize",
 		TokenEndpoint:         "https://op.example.org/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                testsigner.MustNew(),
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
 			"degree": {Format: openid4vp.FormatLdpVCDCQL, Type: []string{"VerifiableCredential", "Degree"}, SubjectClaim: []string{"degree"}},

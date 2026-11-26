@@ -19,6 +19,7 @@ func opWith(t *testing.T, st credbridge.OPSubjectType, pres map[string]credbridg
 		AuthorizationEndpoint:   "https://op.example.org/authorize",
 		TokenEndpoint:           "https://op.example.org/token",
 		ClientValidator:         allowAnyClient,
+		CredentialVerifier:      acceptVerifier,
 		Signer:                  testsigner.MustNew(),
 		DCQLQuerySupported:      true,
 		SubjectType:             st,

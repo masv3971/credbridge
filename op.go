@@ -84,6 +84,11 @@ type OPConfig struct {
 	// the raw subject value and advertise it accordingly.
 	SubjectType OPSubjectType
 
+	// CredentialVerifier is REQUIRED. HandleWalletResponse passes every
+	// presented credential to it and treats a rejected credential as not
+	// satisfying its query (Sections 5.3 and 6.3).
+	CredentialVerifier CredentialVerifier
+
 	// TrustedAuthorityAllowlist restricts which URIs/entity IDs the OP
 	// will dereference for trust material (Section 7.4). Nil means "allow
 	// nothing"; an empty non-nil map means "explicit-empty allowlist" and
@@ -198,6 +203,9 @@ func (c OPConfig) validate() error {
 	}
 	if c.ClientValidator == nil {
 		return errors.New("credbridge/op: OPConfig.ClientValidator is required")
+	}
+	if c.CredentialVerifier == nil {
+		return errors.New("credbridge/op: OPConfig.CredentialVerifier is required")
 	}
 	if c.WalletProtocol != "" && c.WalletProtocol != OPWalletProtocolOpenID4VP {
 		return fmt.Errorf("credbridge/op: unsupported WalletProtocol %q (only %q is implemented)", c.WalletProtocol, OPWalletProtocolOpenID4VP)

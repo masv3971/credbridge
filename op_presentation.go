@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -154,13 +155,9 @@ type OPPresentationResult struct {
 // only when a required credential set (or, when credential_sets is
 // absent, any credential query) is left unsatisfied.
 //
-// NOTE: this layer does not perform issuer-signature, trust-chain, or
-// holder-binding verification — the pinned openid4vp extractor only
-// parses tokens. Consequently trust_status is reported as "not_checked"
-// and holder_binding is not asserted; the matcher parameter is reserved
-// for a future verifier and does not by itself upgrade trust_status.
-// Callers MUST verify credential signatures, issuer trust, and holder
-// binding before relying on the returned claims.
+// Every token goes through OPConfig.CredentialVerifier first; a token it
+// rejects leaves its query unsatisfied (§5.3 step 4, §6.3). matcher is
+// handed to the verifier unchanged.
 func (o *OP) HandleWalletResponse(ctx context.Context, opSession *OPSession, resp *openid4vp.VPResponse, matcher openid4vp.TrustedAuthorityMatcher) (*OPPresentationResult, error) {
 	if opSession == nil {
 		return nil, fmt.Errorf("%w: nil session", ErrOPAccessDenied)
@@ -186,7 +183,7 @@ func (o *OP) HandleWalletResponse(ctx context.Context, opSession *OPSession, res
 		if !ok {
 			return nil, fmt.Errorf("%w: wallet returned unknown credential id %q", ErrOPAccessDenied, credID)
 		}
-		queryEntries, ok, err := o.resolveQueryEntries(ctx, extractor, resolvedQuery, tokens)
+		queryEntries, ok, err := o.resolveQueryEntries(ctx, extractor, opSession, resolvedQuery, tokens, matcher)
 		if err != nil {
 			return nil, err
 		}
@@ -210,10 +207,11 @@ func (o *OP) HandleWalletResponse(ctx context.Context, opSession *OPSession, res
 
 // resolveQueryEntries validates every token presented for one credential
 // query. It returns (entries, true, nil) when all tokens satisfy the
-// query's type, value, and claim_sets constraints; (nil, false, nil)
-// when a constraint is unmet (the query is unsatisfied but the overall
-// response may still succeed); and an error only for a malformed token.
-func (o *OP) resolveQueryEntries(ctx context.Context, extractor *openid4vp.ClaimsExtractor, resolvedQuery ResolvedCredentialQuery, tokens []string) ([]CredentialEntry, bool, error) {
+// query's type, value, claim_sets, and verification constraints;
+// (nil, false, nil) when a constraint is unmet (the query is unsatisfied
+// but the overall response may still succeed); and an error only for a
+// malformed token.
+func (o *OP) resolveQueryEntries(ctx context.Context, extractor *openid4vp.ClaimsExtractor, opSession *OPSession, resolvedQuery ResolvedCredentialQuery, tokens []string, matcher openid4vp.TrustedAuthorityMatcher) ([]CredentialEntry, bool, error) {
 	if len(tokens) > 1 && !resolvedQuery.Multiple {
 		return nil, false, nil
 	}
@@ -240,21 +238,56 @@ func (o *OP) resolveQueryEntries(ctx context.Context, extractor *openid4vp.Claim
 		if err != nil {
 			return nil, false, nil
 		}
+		verified, err := o.verifyCredential(ctx, opSession, resolvedQuery, token, matcher)
+		if err != nil {
+			return nil, false, nil
+		}
 		filtered := resolvedQuery.filterClaims(claims, matchedOption)
 		queryEntries = append(queryEntries, CredentialEntry{
-			Type:   resolvedQuery.entryType(presentedTypes),
-			Claims: filtered,
+			Type:       resolvedQuery.entryType(presentedTypes),
+			Issuer:     verified.Issuer,
+			VerifiedAt: o.now().Unix(),
+			Claims:     filtered,
 			Verification: &Verification{
-				TrustStatus: TrustStatusNotChecked,
+				TrustStatus:      verified.TrustStatus,
+				HolderBinding:    verified.HolderBinding,
+				ProtectedHeaders: verified.ProtectedHeaders,
 			},
 			// Preserve the unfiltered claims internally so subject
 			// derivation can still read the stable identifier even when the
-			// RP did not request it to be disclosed. verified_at is omitted
-			// because this layer performs no cryptographic verification.
+			// RP did not request it to be disclosed.
 			subjectSource: claims,
 		})
 	}
 	return queryEntries, true, nil
+}
+
+// verifyCredential runs the configured verifier and re-checks its result
+// against the query, so a verifier cannot weaken an RP constraint.
+func (o *OP) verifyCredential(ctx context.Context, opSession *OPSession, resolvedQuery ResolvedCredentialQuery, token string, matcher openid4vp.TrustedAuthorityMatcher) (*CredentialVerification, error) {
+	verified, err := o.cfg.CredentialVerifier.VerifyCredential(ctx, CredentialVerificationRequest{
+		Token:    token,
+		Query:    resolvedQuery,
+		Nonce:    opSession.Nonce,
+		ClientID: o.cfg.Issuer,
+		Matcher:  matcher,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if verified == nil {
+		return nil, errors.New("verifier returned no result")
+	}
+	if !verified.TrustStatus.IsRegistered() || verified.TrustStatus == TrustStatusInvalid {
+		return nil, fmt.Errorf("verifier returned trust_status %q", verified.TrustStatus)
+	}
+	if verified.HolderBinding != "" && !verified.HolderBinding.IsRegistered() {
+		return nil, fmt.Errorf("verifier returned holder_binding %q", verified.HolderBinding)
+	}
+	if resolvedQuery.RequireCryptographicHolderBinding && verified.HolderBinding != HolderBindingKey {
+		return nil, errors.New("cryptographic holder binding required but not verified")
+	}
+	return verified, nil
 }
 
 // evaluateCredentialSets implements the §4.1.2 requirement rules: when

@@ -181,6 +181,7 @@ func TestConfigValidation(t *testing.T) {
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                testsigner.MustNew(),
 		PairwiseSalt:          []byte("salt"),
 	}
@@ -211,6 +212,7 @@ func TestOP_ClaimSetsMatchAndFilter(t *testing.T) {
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -290,6 +292,7 @@ func TestOP_NestedClaimPathFilter(t *testing.T) {
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -355,6 +358,7 @@ func TestOP_W3CEntryPreservesPresentedTypes(t *testing.T) {
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -400,6 +404,7 @@ func TestOP_CustomStorage(t *testing.T) {
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                testsigner.MustNew(),
 		Storage:               storage,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -557,6 +562,7 @@ func TestOP_SubDerivation_Primary(t *testing.T) {
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -602,6 +608,7 @@ func TestOP_DCQLMetaTypeSwitch(t *testing.T) {
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -617,6 +624,7 @@ func TestOP_DCQLMetaTypeSwitch(t *testing.T) {
 		AuthorizationEndpoint: "https://op/authorize",
 		TokenEndpoint:         "https://op/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{

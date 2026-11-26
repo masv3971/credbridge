@@ -42,6 +42,7 @@ func TestOP_DataMinimisation(t *testing.T) {
 		AuthorizationEndpoint: "https://op.example.org/authorize",
 		TokenEndpoint:         "https://op.example.org/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                sig,
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -185,6 +186,7 @@ func TestOP_IssueIDTokenRetryableAfterSignerFailure(t *testing.T) {
 		AuthorizationEndpoint: "https://op.example.org/authorize",
 		TokenEndpoint:         "https://op.example.org/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                &flakySigner{Signer: inner},
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
 			"ehic": {
@@ -232,6 +234,7 @@ func TestOP_ClientValidatorEnforced(t *testing.T) {
 		AuthorizationEndpoint: "https://op.example.org/authorize",
 		TokenEndpoint:         "https://op.example.org/token",
 		Signer:                testsigner.MustNew(),
+		CredentialVerifier:    acceptVerifier,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
 			"ehic": {
 				Format:       openid4vp.FormatSDJWTVC,
@@ -273,6 +276,7 @@ func mustOP(t *testing.T) *credbridge.OP {
 		AuthorizationEndpoint: "https://op.example.org/authorize",
 		TokenEndpoint:         "https://op.example.org/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                testsigner.MustNew(),
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
 			"ehic": {
@@ -295,6 +299,7 @@ func mustDCQLOP(t *testing.T) *credbridge.OP {
 		AuthorizationEndpoint: "https://op.example.org/authorize",
 		TokenEndpoint:         "https://op.example.org/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                testsigner.MustNew(),
 		DCQLQuerySupported:    true,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
@@ -309,3 +314,12 @@ func mustDCQLOP(t *testing.T) *credbridge.OP {
 	require.NoError(t, err, "NewOP")
 	return op
 }
+
+// acceptVerifier stands in for a real verifier: it accepts every
+// credential, reporting status not_checked with a verified key binding.
+var acceptVerifier = credbridge.CredentialVerifierFunc(func(context.Context, credbridge.CredentialVerificationRequest) (*credbridge.CredentialVerification, error) {
+	return &credbridge.CredentialVerification{
+		TrustStatus:   credbridge.TrustStatusNotChecked,
+		HolderBinding: credbridge.HolderBindingKey,
+	}, nil
+})

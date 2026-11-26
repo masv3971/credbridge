@@ -78,6 +78,7 @@ func TestUserInfoRoundTrip(t *testing.T) {
 		AuthorizationEndpoint: "https://op.example.org/authorize",
 		TokenEndpoint:         "https://op.example.org/token",
 		ClientValidator:       allowAnyClient,
+		CredentialVerifier:    acceptVerifier,
 		Signer:                sig,
 		CredentialPresentations: map[string]credbridge.OPCredentialTypeConfig{
 			"ehic": {
