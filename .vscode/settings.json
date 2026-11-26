@@ -1,0 +1,26 @@
+{
+    "cSpell.words": [
+        "DCQL",
+        "DCQLID",
+        "DCQLOP",
+        "ehic",
+        "esac",
+        "eudi",
+        "gofumpt",
+        "gosec",
+        "honnef",
+        "JWKSURI",
+        "masv",
+        "mvdan",
+        "nosec",
+        "RPDCQL",
+        "sdjwt",
+        "SDJWTVC",
+        "securego",
+        "staticcheck",
+        "testsigner",
+        "ttlcache",
+        "VCDCQL",
+        "vulncheck"
+    ]
+}
