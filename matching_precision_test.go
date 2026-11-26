@@ -25,3 +25,12 @@ func TestMatchValue_FloatMatchesItsJSONDecimal(t *testing.T) {
 	assert.False(t, credbridge.MatchValue(float64(0.1), json.Number("0.10000000000000001")))
 	assert.False(t, credbridge.MatchValue(float64(0.1), json.Number("0.2")))
 }
+
+// An exactly representable integer must compare by its own digits, not by its shortest float spelling.
+func TestMatchValue_IntegerKeepsExactDigits(t *testing.T) {
+	assert.True(t, credbridge.MatchValue(int64(1000000000000000128), json.Number("1000000000000000128")))
+	assert.True(t, credbridge.MatchValue(json.Number("1000000000000000128"), int64(1000000000000000128)))
+	assert.False(t, credbridge.MatchValue(int64(1000000000000000128), json.Number("1000000000000000100")))
+	assert.True(t, credbridge.MatchValue(uint64(1000000000000000128), json.Number("1000000000000000128")))
+	assert.False(t, credbridge.MatchValue(uint64(1000000000000000128), json.Number("1000000000000000100")))
+}

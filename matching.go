@@ -93,11 +93,26 @@ func matchExactNumber(other any, n json.Number) bool {
 		if !ok {
 			return false
 		}
-		bits := 64
-		if _, isFloat32 := o.(float32); isFloat32 {
-			bits = 32
+		var s string
+		switch v := o.(type) {
+		case float32:
+			s = strconv.FormatFloat(f, 'g', -1, 32)
+		case float64:
+			s = strconv.FormatFloat(f, 'g', -1, 64)
+		case int:
+			s = strconv.FormatInt(int64(v), 10)
+		case int32:
+			s = strconv.FormatInt(int64(v), 10)
+		case int64:
+			s = strconv.FormatInt(v, 10)
+		case uint:
+			s = strconv.FormatUint(uint64(v), 10)
+		case uint32:
+			s = strconv.FormatUint(uint64(v), 10)
+		case uint64:
+			s = strconv.FormatUint(v, 10)
 		}
-		or, ok = new(big.Rat).SetString(strconv.FormatFloat(f, 'g', -1, bits))
+		or, ok = new(big.Rat).SetString(s)
 		if !ok {
 			return false
 		}
